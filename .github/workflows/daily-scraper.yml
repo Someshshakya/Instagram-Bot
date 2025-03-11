@@ -27,6 +27,43 @@ jobs:
       run: |
         npm install puppeteer dotenv mongodb
         
+    - name: Verify Secrets
+      run: |
+        if [ -z "${{ secrets.INSTAGRAM_USERNAME }}" ]; then
+          echo "Error: INSTAGRAM_USERNAME is not set"
+          exit 1
+        fi
+        if [ -z "${{ secrets.INSTAGRAM_PASSWORD }}" ]; then
+          echo "Error: INSTAGRAM_PASSWORD is not set"
+          exit 1
+        fi
+        if [ -z "${{ secrets.MONGODB_URI }}" ]; then
+          echo "Error: MONGODB_URI is not set"
+          exit 1
+        fi
+        echo "✓ All required secrets are set"
+        
+    - name: Test MongoDB Connection
+      run: |
+        echo "const { MongoClient } = require('mongodb');
+        async function testConnection() {
+          const client = new MongoClient('${{ secrets.MONGODB_URI }}');
+          try {
+            await client.connect();
+            console.log('MongoDB connection successful');
+            const db = client.db('instagram_bot');
+            await db.command({ ping: 1 });
+            console.log('Database ping successful');
+          } catch (error) {
+            console.error('MongoDB connection failed:', error);
+            process.exit(1);
+          } finally {
+            await client.close();
+          }
+        }
+        testConnection();" > test-mongo-connection.js
+        node test-mongo-connection.js
+        
     - name: Create .env file
       run: |
         echo "INSTAGRAM_USERNAME=${{ secrets.INSTAGRAM_USERNAME }}" > .env
@@ -38,4 +75,10 @@ jobs:
       env:
         INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
         INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
-        MONGODB_URI: ${{ secrets.MONGODB_URI }} 
+        MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      
+    - name: Cleanup
+      if: always()
+      run: |
+        rm -f .env
+        rm -f test-mongo-connection.js 
