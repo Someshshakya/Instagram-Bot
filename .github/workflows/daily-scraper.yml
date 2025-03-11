@@ -18,7 +18,8 @@ jobs:
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
       CI: true
       CHROME_PATH: /usr/bin/google-chrome
-    
+      DEBUG: "puppeteer:*"  # Enable Puppeteer debugging
+      
     services:
       mongodb:
         image: mongo:latest
@@ -33,27 +34,63 @@ jobs:
       with:
         node-version: '16'
         
-    - name: Install Chrome dependencies
+    - name: System Info
       run: |
+        echo "Node version: $(node -v)"
+        echo "NPM version: $(npm -v)"
+        echo "Ubuntu version: $(lsb_release -a)"
+        echo "Memory info: $(free -h)"
+        echo "Disk space: $(df -h)"
+        
+    - name: Install Chrome
+      run: |
+        echo "Installing Chrome..."
         sudo apt-get update
         sudo apt-get install -y wget gnupg2
         wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
         sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
         sudo apt-get update
-        sudo apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
+        sudo apt-get install -y google-chrome-stable \
+          fonts-liberation \
+          libasound2t64 \
+          libatk-bridge2.0-0 \
+          libatk1.0-0 \
+          libatspi2.0-0 \
+          libcups2 \
+          libdbus-1-3 \
+          libdrm2 \
+          libgbm1 \
+          libgtk-3-0 \
+          libnspr4 \
+          libnss3 \
+          libxcomposite1 \
+          libxdamage1 \
+          libxfixes3 \
+          libxkbcommon0 \
+          libxrandr2 \
+          xdg-utils \
           --no-install-recommends
+        echo "Chrome installation completed"
         
     - name: Check Chrome installation
       run: |
+        echo "Chrome version:"
         google-chrome --version
+        echo "Chrome location:"
         which google-chrome
+        echo "Chrome dependencies:"
+        ldd $(which google-chrome) || true
         
     - name: Install dependencies
       run: |
         echo "Installing npm dependencies..."
-        npm install
+        npm install --verbose
         echo "Installed dependencies:"
         npm list --depth=0
+        echo "Checking for Puppeteer:"
+        npm list puppeteer
+        echo "Checking Puppeteer cache:"
+        ls -la ./node_modules/puppeteer/.local-chromium/ || true
         
     - name: Verify Secrets
       run: |
@@ -70,13 +107,23 @@ jobs:
           exit 1
         fi
         echo "✓ All required secrets are set"
+        # Test MongoDB URI format
+        if [[ "${{ secrets.MONGODB_URI }}" =~ ^mongodb(\+srv)?:// ]]; then
+          echo "✓ MongoDB URI format appears valid"
+        else
+          echo "Error: MongoDB URI format appears invalid"
+          exit 1
+        fi
         
     - name: Test MongoDB Connection
       run: |
         echo "const { MongoClient } = require('mongodb');
         async function testConnection() {
           console.log('Testing MongoDB connection...');
-          const client = new MongoClient('${{ secrets.MONGODB_URI }}');
+          const client = new MongoClient('${{ secrets.MONGODB_URI }}', {
+            serverSelectionTimeoutMS: 5000,
+            connectTimeoutMS: 10000
+          });
           try {
             console.log('Attempting to connect...');
             await client.connect();
@@ -85,14 +132,24 @@ jobs:
             console.log('Testing database access...');
             await db.command({ ping: 1 });
             console.log('Database ping successful');
+            const collections = await db.listCollections().toArray();
+            console.log('Available collections:', collections.map(c => c.name));
           } catch (error) {
             console.error('MongoDB connection failed:', error);
+            console.error('Error details:', {
+              name: error.name,
+              message: error.message,
+              code: error.code
+            });
             process.exit(1);
           } finally {
             await client.close();
           }
         }
-        testConnection().catch(console.error);" > test-mongo-connection.js
+        testConnection().catch(error => {
+          console.error('Test failed:', error);
+          process.exit(1);
+        });" > test-mongo-connection.js
         node test-mongo-connection.js
         
     - name: Create .env file
@@ -102,12 +159,20 @@ jobs:
         echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" >> .env
         echo "CI=true" >> .env
         echo "CHROME_PATH=${{ env.CHROME_PATH }}" >> .env
+        echo "DEBUG=puppeteer:*" >> .env
+        echo "Verifying .env file contents (with sensitive data masked):"
+        sed 's/\(INSTAGRAM_PASSWORD=\).*/\1****/' .env | sed 's/\(MONGODB_URI=mongodb.*\)@/\1****@/' || true
         
     - name: Run scraper
       run: |
         echo "Starting follower script..."
-        echo "Chrome path: ${{ env.CHROME_PATH }}"
-        echo "Chrome version: $(google-chrome --version)"
+        echo "Environment:"
+        echo "- Chrome path: ${{ env.CHROME_PATH }}"
+        echo "- Chrome version: $(google-chrome --version)"
+        echo "- Node version: $(node -v)"
+        echo "- Working directory: $(pwd)"
+        echo "- Directory contents:"
+        ls -la
         node followerScraper.js
       env:
         INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
@@ -115,7 +180,20 @@ jobs:
         MONGODB_URI: ${{ secrets.MONGODB_URI }}
         CI: true
         CHROME_PATH: ${{ env.CHROME_PATH }}
+        DEBUG: "puppeteer:*"
       
+    - name: Upload error screenshots
+      if: failure()
+      uses: actions/upload-artifact@v2
+      with:
+        name: error-screenshots
+        path: |
+          error-screenshot.png
+          suspicious-login.png
+          login-error.png
+          login-status-unclear.png
+        if-no-files-found: ignore
+        
     - name: Cleanup
       if: always()
       run: |
