@@ -134,20 +134,70 @@ const randomDelay = async (min, max) => {
 
         log.info('Waiting for login to complete...');
         // Wait for either the home feed or the security checkpoint
-        await Promise.race([
-            page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 30000 }),
-            page.waitForSelector('input[name="verificationCode"]', { visible: true, timeout: 30000 })
-        ]);
+        try {
+            await Promise.race([
+                page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 30000 }),
+                page.waitForSelector('input[name="verificationCode"]', { visible: true, timeout: 30000 }),
+                page.waitForSelector('p[data-testid="login-error-message"]', { visible: true, timeout: 30000 }),
+                page.waitForSelector('div[role="dialog"]', { visible: true, timeout: 30000 })
+            ]);
+
+            // Take screenshot for debugging
+            await page.screenshot({ path: 'login-state.png', fullPage: true });
+            log.debug('Saved login state screenshot');
+
+            // Check for error message
+            const errorMessage = await page.$('p[data-testid="login-error-message"]');
+            if (errorMessage) {
+                const error = await page.evaluate(el => el.textContent, errorMessage);
+                log.error(`Login error message: ${error}`);
+                throw new Error(`Instagram login failed: ${error}`);
+            }
+
+            // Check for verification code request
+            const verificationCode = await page.$('input[name="verificationCode"]');
+            if (verificationCode) {
+                log.warning('Instagram requires verification code. Please check your email/phone.');
+                await page.screenshot({ path: 'verification-needed.png', fullPage: true });
+                throw new Error('Verification code required');
+            }
+
+            // Check for suspicious login attempt dialog
+            const suspiciousLogin = await page.$('div[role="dialog"]');
+            if (suspiciousLogin) {
+                const dialogText = await page.evaluate(el => el.textContent, suspiciousLogin);
+                if (dialogText.includes('suspicious') || dialogText.includes('unusual')) {
+                    log.warning('Instagram detected suspicious login attempt');
+                    await page.screenshot({ path: 'suspicious-login.png', fullPage: true });
+                    throw new Error('Suspicious login detected');
+                }
+            }
+
+            // Check if we're actually logged in
+            const homeIcon = await page.$('svg[aria-label="Home"]');
+            if (homeIcon) {
+                log.success('Successfully logged in!');
+            } else {
+                log.warning('Login status unclear - no home icon found');
+                await page.screenshot({ path: 'login-status-unclear.png', fullPage: true });
+                throw new Error('Login status unclear');
+            }
+
+        } catch (loginError) {
+            log.error('Login process error:', loginError.message);
+            await page.screenshot({ path: 'login-error.png', fullPage: true });
+            throw loginError;
+        }
 
         // Check if we hit a security checkpoint
         const securityCheck = await page.$('input[name="verificationCode"]');
         if (securityCheck) {
-            log.info('Security checkpoint detected! Please check your email/phone for verification code.');
-            await browser.close();
-            return;
+            log.warning('Security checkpoint detected! Please check your email/phone for verification code.');
+            await page.screenshot({ path: 'security-checkpoint.png', fullPage: true });
+            throw new Error('Security checkpoint detected');
         }
 
-        log.info('Successfully logged in!');
+        log.success('Successfully logged in!');
         await randomDelay(2000, 4000);
 
         // Handle any popups
@@ -314,7 +364,7 @@ const randomDelay = async (min, max) => {
                     const username = await page.evaluate(async (buttonIndex) => {
                         const button = document.querySelectorAll('button._acan._acap._acas._aj1-')[buttonIndex];
                         if (!button) {
-                            log.debug('DEBUG: Button not found');
+                            console.log('DEBUG: Button not found');
                             return null;
                         }
 
@@ -331,14 +381,14 @@ const randomDelay = async (min, max) => {
                             parent = parent.parentElement;
                             depth++;
                         }
-                        log.debug('DEBUG: Parent chain:', JSON.stringify(parentChain, null, 2));
+                        console.log('DEBUG: Parent chain:', JSON.stringify(parentChain, null, 2));
 
                         // Try different methods to find the username
                         const findUsername = () => {
                             // Method 1: Find closest article and get username from link
                             const article = button.closest('article') || button.closest('div[role="presentation"]');
                             if (article) {
-                                log.debug('DEBUG: Found article:', article.outerHTML);
+                                console.log('DEBUG: Found article:', article.outerHTML);
 
                                 // Try to find username in links
                                 const links = article.querySelectorAll('a[role="link"]');
@@ -346,13 +396,13 @@ const randomDelay = async (min, max) => {
                                     const href = link.getAttribute('href');
                                     if (href && href.startsWith('/') && !href.includes('/explore/') && !href.includes('/accounts/')) {
                                         const potentialUsername = href.split('/')[1];
-                                        log.debug('DEBUG: Found potential username from href:', potentialUsername);
+                                        console.log('DEBUG: Found potential username from href:', potentialUsername);
                                         if (isValidUsername(potentialUsername)) return potentialUsername;
                                     }
 
                                     // Try to get username from link text
                                     const linkText = link.textContent.trim();
-                                    log.debug('DEBUG: Found link text:', linkText);
+                                    console.log('DEBUG: Found link text:', linkText);
                                     if (isValidUsername(linkText)) return linkText;
                                 }
 
@@ -360,7 +410,7 @@ const randomDelay = async (min, max) => {
                                 const usernameSpans = article.querySelectorAll('span._ap3a._aaco._aacw._aacx._aad7._aade');
                                 for (const span of usernameSpans) {
                                     const text = span.textContent.trim();
-                                    log.debug('DEBUG: Found span text:', text);
+                                    console.log('DEBUG: Found span text:', text);
                                     if (isValidUsername(text)) return text;
                                 }
                             }
@@ -372,7 +422,7 @@ const randomDelay = async (min, max) => {
                                 for (const link of links) {
                                     if (link.textContent.includes('Follow')) continue;
                                     const text = link.textContent.trim();
-                                    log.debug('DEBUG: Found parent link text:', text);
+                                    console.log('DEBUG: Found parent link text:', text);
                                     if (isValidUsername(text)) return text;
                                 }
                                 current = current.parentElement;
@@ -382,7 +432,7 @@ const randomDelay = async (min, max) => {
                             const container = button.closest('div[role="presentation"]') || button.closest('div._aano');
                             if (container) {
                                 const allText = container.textContent.trim();
-                                log.debug('DEBUG: Container text:', allText);
+                                console.log('DEBUG: Container text:', allText);
                                 const words = allText.split(/[\s\n]+/);
                                 for (const word of words) {
                                     if (isValidUsername(word)) return word;
@@ -403,7 +453,7 @@ const randomDelay = async (min, max) => {
                                 text.includes('Suggested') ||
                                 text.includes('Meta') ||
                                 text.includes('Instagram')) return false;
-                            log.debug('DEBUG: Valid username found:', text);
+                            console.log('DEBUG: Valid username found:', text);
                             return true;
                         }
 
