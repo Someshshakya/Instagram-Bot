@@ -39,9 +39,17 @@ const randomDelay = async (min, max) => {
         // Launch browser and get initial counts first
         console.log('Launching browser...');
         const isCI = process.env.CI === 'true';
+        console.log('Environment:', {
+            isCI,
+            chromePath: process.env.CHROME_PATH
+        });
+
         browser = await puppeteer.launch({
             headless: isCI ? 'new' : false,
-            defaultViewport: null,
+            defaultViewport: {
+                width: 1920,
+                height: 1080
+            },
             args: [
                 '--start-maximized',
                 '--disable-notifications',
@@ -49,11 +57,14 @@ const randomDelay = async (min, max) => {
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--window-size=1920,1080'
+                '--window-size=1920,1080',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process'
             ],
-            executablePath: isCI ? '/usr/bin/chromium-browser' : undefined
+            executablePath: isCI ? process.env.CHROME_PATH : undefined
         });
 
+        console.log('Browser launched successfully');
         page = await browser.newPage();
 
         // Set user agent to look more like a real browser

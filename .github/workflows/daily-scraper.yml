@@ -2,8 +2,8 @@ name: Daily Instagram Follower Scraper
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Runs at 00:00 UTC every day
-  workflow_dispatch:      # Allows manual trigger
+    - cron: '0 0 * * *'  # Run at midnight UTC
+  workflow_dispatch:  # Allow manual trigger
 
 permissions:
   contents: read
@@ -12,6 +12,12 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    env:
+      INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
+      INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      CI: true
+      CHROME_PATH: /usr/bin/google-chrome
     
     services:
       mongodb:
@@ -30,27 +36,24 @@ jobs:
     - name: Install Chrome dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y chromium-browser \
-          libxss1 \
-          libx11-xcb1 \
-          libxcomposite1 \
-          libxcursor1 \
-          libxdamage1 \
-          libxfixes3 \
-          libxi6 \
-          libxtst6 \
-          libnss3 \
-          libcups2 \
-          libxrandr2 \
-          libasound2 \
-          libpangocairo-1.0-0 \
-          libatk1.0-0 \
-          libatk-bridge2.0-0 \
-          libgtk-3-0
+        sudo apt-get install -y wget gnupg2
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
+          --no-install-recommends
+        
+    - name: Check Chrome installation
+      run: |
+        google-chrome --version
+        which google-chrome
         
     - name: Install dependencies
       run: |
+        echo "Installing npm dependencies..."
         npm install
+        echo "Installed dependencies:"
+        npm list --depth=0
         
     - name: Verify Secrets
       run: |
@@ -72,11 +75,14 @@ jobs:
       run: |
         echo "const { MongoClient } = require('mongodb');
         async function testConnection() {
+          console.log('Testing MongoDB connection...');
           const client = new MongoClient('${{ secrets.MONGODB_URI }}');
           try {
+            console.log('Attempting to connect...');
             await client.connect();
             console.log('MongoDB connection successful');
             const db = client.db('instagram_bot');
+            console.log('Testing database access...');
             await db.command({ ping: 1 });
             console.log('Database ping successful');
           } catch (error) {
@@ -86,23 +92,29 @@ jobs:
             await client.close();
           }
         }
-        testConnection();" > test-mongo-connection.js
+        testConnection().catch(console.error);" > test-mongo-connection.js
         node test-mongo-connection.js
         
     - name: Create .env file
       run: |
-        echo "INSTAGRAM_USERNAME=${{ secrets.INSTAGRAM_USERNAME }}" > .env
+        echo "INSTAGRAM_USERNAME=${{ secrets.INSTAGRAM_USERNAME }}" >> .env
         echo "INSTAGRAM_PASSWORD=${{ secrets.INSTAGRAM_PASSWORD }}" >> .env
         echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" >> .env
         echo "CI=true" >> .env
+        echo "CHROME_PATH=${{ env.CHROME_PATH }}" >> .env
         
     - name: Run scraper
-      run: node followerScraper.js
+      run: |
+        echo "Starting follower script..."
+        echo "Chrome path: ${{ env.CHROME_PATH }}"
+        echo "Chrome version: $(google-chrome --version)"
+        node followerScraper.js
       env:
         INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
         INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
         MONGODB_URI: ${{ secrets.MONGODB_URI }}
         CI: true
+        CHROME_PATH: ${{ env.CHROME_PATH }}
       
     - name: Cleanup
       if: always()
