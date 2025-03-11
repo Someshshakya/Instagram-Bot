@@ -1,7 +1,9 @@
 const puppeteer = require('puppeteer');
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
-const uri = 'mongodb://127.0.0.1:27017/instagram_bot';
+
+// Use MongoDB URL from environment variables with fallback
+const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
 const client = new MongoClient(uri, {
     serverSelectionTimeoutMS: 5000,
     connectTimeoutMS: 10000
@@ -43,7 +45,9 @@ const randomDelay = async (min, max) => {
                 '--start-maximized',
                 '--disable-notifications',
                 '--no-sandbox',
-                '--disable-setuid-sandbox'
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu'
             ]
         });
 
@@ -154,7 +158,6 @@ const randomDelay = async (min, max) => {
             const initialDoc = {
                 date: today,
                 totalFollowedToday: 0,
-                following: [],
                 totalFollowers: counts ? counts.followers : 0,
                 totalFollowing: counts ? counts.following : 0
             };
@@ -472,18 +475,13 @@ const randomDelay = async (min, max) => {
                                     const currentState = await followersCollection.findOne({ date: today });
                                     console.log('Current state before update:', currentState);
 
-                                    // Perform the update
+                                    // Perform the update without storing usernames
                                     const updateResult = await followersCollection.updateOne(
                                         { date: today },
                                         {
                                             $inc: {
-                                                totalFollowedToday: 1
-                                            },
-                                            $addToSet: {
-                                                following: username
-                                            },
-                                            $set: {
-                                                totalFollowing: (currentState.totalFollowing || 0) + 1
+                                                totalFollowedToday: 1,
+                                                totalFollowing: 1
                                             }
                                         }
                                     );
@@ -500,12 +498,10 @@ const randomDelay = async (min, max) => {
                                     console.log('State after update:', {
                                         before: {
                                             totalFollowedToday: currentState.totalFollowedToday,
-                                            followingCount: currentState.following.length,
                                             totalFollowing: currentState.totalFollowing
                                         },
                                         after: {
                                             totalFollowedToday: updatedDoc.totalFollowedToday,
-                                            followingCount: updatedDoc.following.length,
                                             totalFollowing: updatedDoc.totalFollowing
                                         }
                                     });
@@ -578,7 +574,6 @@ const randomDelay = async (min, max) => {
         const finalStats = await followersCollection.findOne({ date: today });
         console.log('Today\'s following statistics:');
         console.log(`Total followed today: ${finalStats.totalFollowedToday}`);
-        console.log(`Total unique users followed: ${finalStats.following.length}`);
         console.log(`Total followers: ${finalStats.totalFollowers}`);
         console.log(`Total following: ${finalStats.totalFollowing}`);
 

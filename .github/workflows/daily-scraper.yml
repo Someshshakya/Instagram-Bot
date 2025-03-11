@@ -1,0 +1,41 @@
+name: Daily Instagram Follower Scraper
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs at 00:00 UTC every day
+  workflow_dispatch:      # Allows manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    services:
+      mongodb:
+        image: mongo:latest
+        ports:
+          - 27017:27017
+
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16'
+        
+    - name: Install dependencies
+      run: |
+        npm install puppeteer dotenv mongodb
+        
+    - name: Create .env file
+      run: |
+        echo "INSTAGRAM_USERNAME=${{ secrets.INSTAGRAM_USERNAME }}" > .env
+        echo "INSTAGRAM_PASSWORD=${{ secrets.INSTAGRAM_PASSWORD }}" >> .env
+        echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" >> .env
+        
+    - name: Run scraper
+      run: node followerScraper.js
+      env:
+        INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
+        INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
+        MONGODB_URI: ${{ secrets.MONGODB_URI }} 

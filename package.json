@@ -1,17 +1,17 @@
 {
-  "name": "instagram-unfollower",
+  "name": "instagram-bot",
   "version": "1.0.0",
-  "description": "Instagram auto unfollower script",
-  "main": "unfollower.js",
+  "description": "Instagram follower management automation",
+  "main": "followerScraper.js",
   "scripts": {
-    "start": "node unfollower.js"
+    "start": "node followerScraper.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "dotenv": "^16.3.1",
-    "mongodb": "^6.13.1",
-    "puppeteer": "22.0.0"
+    "dotenv": "^16.0.3",
+    "mongodb": "^5.0.0",
+    "puppeteer": "^21.0.0"
   }
 }
