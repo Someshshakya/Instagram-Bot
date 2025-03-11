@@ -112,92 +112,112 @@ const randomDelay = async (min, max) => {
             throw error;
         }
 
-        log.info('Attempting to login...');
-        await page.waitForSelector('input[name="username"]', { visible: true });
-        await randomDelay(1000, 2000);
-
-        // Type like a human with variable delays
-        for (const char of process.env.INSTAGRAM_USERNAME) {
-            await page.type('input[name="username"]', char);
-            await randomDelay(50, 150);
-        }
-
-        await randomDelay(500, 1000);
-
-        for (const char of process.env.INSTAGRAM_PASSWORD) {
-            await page.type('input[name="password"]', char);
-            await randomDelay(50, 150);
-        }
-
-        await randomDelay(500, 1000);
-        await page.click('button[type="submit"]');
-
-        log.info('Waiting for login to complete...');
-        // Wait for either the home feed or the security checkpoint
+        // Enhanced login process with reCAPTCHA detection
         try {
-            await Promise.race([
-                page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 30000 }),
-                page.waitForSelector('input[name="verificationCode"]', { visible: true, timeout: 30000 }),
-                page.waitForSelector('p[data-testid="login-error-message"]', { visible: true, timeout: 30000 }),
-                page.waitForSelector('div[role="dialog"]', { visible: true, timeout: 30000 })
-            ]);
+            log.info('Attempting to login...');
+            await page.waitForSelector('input[name="username"]', { visible: true });
+            await randomDelay(1000, 2000);
+
+            // Type credentials with human-like delays
+            for (const char of process.env.INSTAGRAM_USERNAME) {
+                await page.type('input[name="username"]', char);
+                await randomDelay(50, 150);
+            }
+
+            await randomDelay(500, 1000);
+
+            for (const char of process.env.INSTAGRAM_PASSWORD) {
+                await page.type('input[name="password"]', char);
+                await randomDelay(50, 150);
+            }
+
+            await randomDelay(500, 1000);
+
+            // Check for reCAPTCHA before clicking login
+            const recaptchaFrame = await page.$('iframe[src*="recaptcha"]');
+            if (recaptchaFrame) {
+                log.warning('reCAPTCHA detected before login!');
+                await page.screenshot({ path: 'recaptcha-challenge.png', fullPage: true });
+                throw new Error('Instagram is showing reCAPTCHA challenge. Please complete it manually and try again later.');
+            }
+
+            await page.click('button[type="submit"]');
+
+            // Wait for any of these possible outcomes after login attempt
+            const loginResult = await Promise.race([
+                page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 60000 })
+                    .then(() => ({ status: 'success', element: 'home' })),
+                page.waitForSelector('input[name="verificationCode"]', { visible: true, timeout: 60000 })
+                    .then(() => ({ status: 'verification', element: 'verification' })),
+                page.waitForSelector('p[data-testid="login-error-message"]', { visible: true, timeout: 60000 })
+                    .then(() => ({ status: 'error', element: 'error' })),
+                page.waitForSelector('iframe[src*="recaptcha"]', { visible: true, timeout: 60000 })
+                    .then(() => ({ status: 'recaptcha', element: 'recaptcha' })),
+                page.waitForSelector('div[role="dialog"]', { visible: true, timeout: 60000 })
+                    .then(() => ({ status: 'dialog', element: 'dialog' }))
+            ]).catch(error => ({ status: 'error', error }));
 
             // Take screenshot for debugging
             await page.screenshot({ path: 'login-state.png', fullPage: true });
-            log.debug('Saved login state screenshot');
 
-            // Check for error message
-            const errorMessage = await page.$('p[data-testid="login-error-message"]');
-            if (errorMessage) {
-                const error = await page.evaluate(el => el.textContent, errorMessage);
-                log.error(`Login error message: ${error}`);
-                throw new Error(`Instagram login failed: ${error}`);
-            }
+            switch (loginResult.status) {
+                case 'success':
+                    log.success('Successfully logged in!');
+                    break;
 
-            // Check for verification code request
-            const verificationCode = await page.$('input[name="verificationCode"]');
-            if (verificationCode) {
-                log.warning('Instagram requires verification code. Please check your email/phone.');
-                await page.screenshot({ path: 'verification-needed.png', fullPage: true });
-                throw new Error('Verification code required');
-            }
+                case 'recaptcha':
+                    log.warning('reCAPTCHA challenge detected after login attempt');
+                    await page.screenshot({ path: 'recaptcha-after-login.png', fullPage: true });
+                    throw new Error('Instagram requires reCAPTCHA verification. Please try again later or complete it manually.');
 
-            // Check for suspicious login attempt dialog
-            const suspiciousLogin = await page.$('div[role="dialog"]');
-            if (suspiciousLogin) {
-                const dialogText = await page.evaluate(el => el.textContent, suspiciousLogin);
-                if (dialogText.includes('suspicious') || dialogText.includes('unusual')) {
-                    log.warning('Instagram detected suspicious login attempt');
-                    await page.screenshot({ path: 'suspicious-login.png', fullPage: true });
-                    throw new Error('Suspicious login detected');
-                }
-            }
+                case 'verification':
+                    log.warning('Instagram requires verification code');
+                    await page.screenshot({ path: 'verification-needed.png', fullPage: true });
+                    throw new Error('Verification code required');
 
-            // Check if we're actually logged in
-            const homeIcon = await page.$('svg[aria-label="Home"]');
-            if (homeIcon) {
-                log.success('Successfully logged in!');
-            } else {
-                log.warning('Login status unclear - no home icon found');
-                await page.screenshot({ path: 'login-status-unclear.png', fullPage: true });
-                throw new Error('Login status unclear');
+                case 'dialog':
+                    const dialogText = await page.evaluate(() => {
+                        const dialog = document.querySelector('div[role="dialog"]');
+                        return dialog ? dialog.textContent : '';
+                    });
+                    log.warning(`Login dialog detected: ${dialogText}`);
+                    await page.screenshot({ path: 'login-dialog.png', fullPage: true });
+                    throw new Error(`Login dialog appeared: ${dialogText}`);
+
+                case 'error':
+                    const errorText = await page.evaluate(() => {
+                        const error = document.querySelector('p[data-testid="login-error-message"]');
+                        return error ? error.textContent : '';
+                    });
+                    log.error(`Login error: ${errorText || loginResult.error?.message || 'Unknown error'}`);
+                    await page.screenshot({ path: 'login-error.png', fullPage: true });
+                    throw new Error(`Login failed: ${errorText || loginResult.error?.message || 'Unknown error'}`);
+
+                default:
+                    log.error('Unexpected login outcome');
+                    await page.screenshot({ path: 'unexpected-state.png', fullPage: true });
+                    throw new Error('Unexpected login outcome');
             }
 
         } catch (loginError) {
             log.error('Login process error:', loginError.message);
+            // Capture page content for debugging
+            const pageContent = await page.content();
+            log.debug('Page content at error:', pageContent.substring(0, 500) + '...');
             await page.screenshot({ path: 'login-error.png', fullPage: true });
             throw loginError;
         }
 
-        // Check if we hit a security checkpoint
-        const securityCheck = await page.$('input[name="verificationCode"]');
-        if (securityCheck) {
-            log.warning('Security checkpoint detected! Please check your email/phone for verification code.');
-            await page.screenshot({ path: 'security-checkpoint.png', fullPage: true });
-            throw new Error('Security checkpoint detected');
+        // Additional verification after successful login
+        try {
+            log.debug('Performing post-login verification...');
+            await page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 5000 });
+            log.success('Post-login verification successful');
+        } catch (error) {
+            log.warning('Post-login verification failed:', error.message);
+            await page.screenshot({ path: 'post-login-verification-failed.png', fullPage: true });
         }
 
-        log.success('Successfully logged in!');
         await randomDelay(2000, 4000);
 
         // Handle any popups
