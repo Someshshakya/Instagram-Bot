@@ -11,6 +11,13 @@ const log = {
     debug: (message) => console.log(`[INSTA-BOT] 🔍 ${new Date().toISOString()} - ${message}`)
 };
 
+// Use MongoDB URL from environment variables with fallback
+const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
+const client = new MongoClient(uri, {
+    serverSelectionTimeoutMS: 5000,
+    connectTimeoutMS: 10000
+});
+
 const MAX_FOLLOWS = 100; // Maximum number of people to follow
 const MIN_FOLLOW_DELAY = 10000; // Minimum delay between follows (10 seconds)
 const MAX_FOLLOW_DELAY = 15000; // Maximum delay between follows (15 seconds)
