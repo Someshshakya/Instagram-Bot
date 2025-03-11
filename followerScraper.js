@@ -2,12 +2,14 @@ const puppeteer = require('puppeteer');
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
 
-// Use MongoDB URL from environment variables with fallback
-const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
-const client = new MongoClient(uri, {
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 10000
-});
+// Custom logging function
+const log = {
+    info: (message) => console.log(`[INSTA-BOT] ℹ️ ${new Date().toISOString()} - ${message}`),
+    success: (message) => console.log(`[INSTA-BOT] ✅ ${new Date().toISOString()} - ${message}`),
+    warning: (message) => console.log(`[INSTA-BOT] ⚠️ ${new Date().toISOString()} - ${message}`),
+    error: (message) => console.error(`[INSTA-BOT] ❌ ${new Date().toISOString()} - ${message}`),
+    debug: (message) => console.log(`[INSTA-BOT] 🔍 ${new Date().toISOString()} - ${message}`)
+};
 
 const MAX_FOLLOWS = 100; // Maximum number of people to follow
 const MIN_FOLLOW_DELAY = 10000; // Minimum delay between follows (10 seconds)
@@ -25,8 +27,8 @@ const randomDelay = async (min, max) => {
     let followCount = 0;
 
     try {
-        console.log('Starting Instagram automation...');
-        console.log(`Will follow maximum ${MAX_FOLLOWS} people...`);
+        log.info('Starting Instagram automation...');
+        log.info(`Will follow maximum ${MAX_FOLLOWS} people...`);
 
         // Connect to MongoDB
         await client.connect();
@@ -37,9 +39,9 @@ const randomDelay = async (min, max) => {
         const today = new Date().toISOString().split('T')[0];
 
         // Launch browser and get initial counts first
-        console.log('Launching browser...');
+        log.info('Launching browser...');
         const isCI = process.env.CI === 'true';
-        console.log('Environment:', {
+        log.debug('Environment:', {
             isCI,
             chromePath: process.env.CHROME_PATH
         });
@@ -86,7 +88,7 @@ const randomDelay = async (min, max) => {
 
         // Add error handling for navigation
         try {
-            console.log('Navigating to Instagram login page...');
+            log.info('Navigating to Instagram login page...');
             const response = await page.goto('https://www.instagram.com/', {
                 waitUntil: ['networkidle0', 'domcontentloaded'],
                 timeout: 60000
@@ -96,14 +98,14 @@ const randomDelay = async (min, max) => {
                 throw new Error(`Failed to load Instagram: ${response.status()} ${response.statusText()}`);
             }
 
-            console.log('Instagram page loaded successfully');
+            log.info('Instagram page loaded successfully');
         } catch (error) {
-            console.error('Navigation error:', error);
+            log.error('Navigation error:', error);
             await page.screenshot({ path: 'navigation-error.png', fullPage: true });
             throw error;
         }
 
-        console.log('Attempting to login...');
+        log.info('Attempting to login...');
         await page.waitForSelector('input[name="username"]', { visible: true });
         await randomDelay(1000, 2000);
 
@@ -123,7 +125,7 @@ const randomDelay = async (min, max) => {
         await randomDelay(500, 1000);
         await page.click('button[type="submit"]');
 
-        console.log('Waiting for login to complete...');
+        log.info('Waiting for login to complete...');
         // Wait for either the home feed or the security checkpoint
         await Promise.race([
             page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 30000 }),
@@ -133,12 +135,12 @@ const randomDelay = async (min, max) => {
         // Check if we hit a security checkpoint
         const securityCheck = await page.$('input[name="verificationCode"]');
         if (securityCheck) {
-            console.log('Security checkpoint detected! Please check your email/phone for verification code.');
+            log.info('Security checkpoint detected! Please check your email/phone for verification code.');
             await browser.close();
             return;
         }
 
-        console.log('Successfully logged in!');
+        log.info('Successfully logged in!');
         await randomDelay(2000, 4000);
 
         // Handle any popups
@@ -148,13 +150,13 @@ const randomDelay = async (min, max) => {
                 await button.click();
                 await randomDelay(1000, 2000);
             }
-            console.log('Handled potential popups');
+            log.info('Handled potential popups');
         } catch (e) {
-            console.log('No popups found');
+            log.info('No popups found');
         }
 
         // Get follower and following counts
-        console.log('Fetching follower and following counts...');
+        log.info('Fetching follower and following counts...');
         await page.goto(`https://www.instagram.com/${process.env.INSTAGRAM_USERNAME}/`, { waitUntil: 'networkidle0' });
         await randomDelay(2000, 3000);
 
@@ -187,8 +189,8 @@ const randomDelay = async (min, max) => {
         });
 
         if (counts) {
-            console.log(`Current followers: ${counts.followers}`);
-            console.log(`Current following: ${counts.following}`);
+            log.info(`Current followers: ${counts.followers}`);
+            log.info(`Current following: ${counts.following}`);
         }
 
         // Now check/create today's record with the counts we just got
@@ -202,7 +204,7 @@ const randomDelay = async (min, max) => {
                 totalFollowing: counts ? counts.following : 0
             };
             await followersCollection.insertOne(initialDoc);
-            console.log('Created new record for today:', initialDoc);
+            log.info('Created new record for today:', initialDoc);
             todayRecord = await followersCollection.findOne({ date: today });
         }
 
@@ -217,15 +219,15 @@ const randomDelay = async (min, max) => {
                     }
                 }
             );
-            console.log('Updated initial follower and following counts in MongoDB');
+            log.info('Updated initial follower and following counts in MongoDB');
         }
 
         while (followCount < MAX_FOLLOWS) {
-            console.log('Navigating to suggestions page...');
+            log.info('Navigating to suggestions page...');
             await page.goto('https://www.instagram.com/explore/people/', { waitUntil: 'networkidle0' });
             await randomDelay(2000, 4000);
 
-            console.log('Waiting for suggested users to load...');
+            log.info('Waiting for suggested users to load...');
             // Try multiple button selectors
             const buttonSelectors = [
                 'button._acan._acap._acas._aj1-',
@@ -236,21 +238,21 @@ const randomDelay = async (min, max) => {
 
             let followButtons = [];
             for (const selector of buttonSelectors) {
-                console.log(`Trying button selector: ${selector}`);
+                log.debug(`Trying button selector: ${selector}`);
                 try {
                     await page.waitForSelector(selector, { timeout: 5000 });
                     followButtons = await page.$$(selector);
                     if (followButtons.length > 0) {
-                        console.log(`Found ${followButtons.length} follow buttons using selector: ${selector}`);
+                        log.debug(`Found ${followButtons.length} follow buttons using selector: ${selector}`);
                         break;
                     }
                 } catch (e) {
-                    console.log(`No buttons found with selector: ${selector}`);
+                    log.debug(`No buttons found with selector: ${selector}`);
                 }
             }
 
             if (followButtons.length === 0) {
-                console.log('No follow buttons found, refreshing page...');
+                log.info('No follow buttons found, refreshing page...');
                 await page.reload({ waitUntil: 'networkidle0' });
                 await randomDelay(3000, 5000);
                 continue;
@@ -265,11 +267,11 @@ const randomDelay = async (min, max) => {
                 }
             }
             followButtons = validButtons;
-            console.log(`Found ${followButtons.length} valid follow buttons`);
+            log.debug(`Found ${followButtons.length} valid follow buttons`);
 
             // If no valid buttons found, refresh and try again
             if (followButtons.length === 0) {
-                console.log('No valid follow buttons found, refreshing page...');
+                log.info('No valid follow buttons found, refreshing page...');
                 await page.reload({ waitUntil: 'networkidle0' });
                 await randomDelay(3000, 5000);
                 continue;
@@ -280,20 +282,20 @@ const randomDelay = async (min, max) => {
 
             // If no containers found but buttons exist, create dummy containers
             if (followButtons.length === 0 && followButtonsCount > 0) {
-                console.log('No containers found but buttons exist. Creating virtual containers...');
+                log.info('No containers found but buttons exist. Creating virtual containers...');
                 followButtons = followButtonsCount.map(() => null);
             }
 
             // Verify if counts match
             if (followButtons.length !== followButtonsCount) {
-                console.log('Warning: Number of user containers does not match number of follow buttons');
-                console.log('Will proceed using button count as reference');
+                log.warning('Warning: Number of user containers does not match number of follow buttons');
+                log.warning('Will proceed using button count as reference');
             }
 
             // Follow users until we reach the limit or run out of buttons
             for (let i = 0; i < followButtons.length && followCount < MAX_FOLLOWS; i++) {
                 try {
-                    console.log(`\nProcessing user ${i + 1}:`);
+                    log.debug(`\nProcessing user ${i + 1}:`);
 
                     // First, ensure the button is in view
                     await followButtons[i].evaluate(button => {
@@ -305,7 +307,7 @@ const randomDelay = async (min, max) => {
                     const username = await page.evaluate(async (buttonIndex) => {
                         const button = document.querySelectorAll('button._acan._acap._acas._aj1-')[buttonIndex];
                         if (!button) {
-                            console.log('DEBUG: Button not found');
+                            log.debug('DEBUG: Button not found');
                             return null;
                         }
 
@@ -322,14 +324,14 @@ const randomDelay = async (min, max) => {
                             parent = parent.parentElement;
                             depth++;
                         }
-                        console.log('DEBUG: Parent chain:', JSON.stringify(parentChain, null, 2));
+                        log.debug('DEBUG: Parent chain:', JSON.stringify(parentChain, null, 2));
 
                         // Try different methods to find the username
                         const findUsername = () => {
                             // Method 1: Find closest article and get username from link
                             const article = button.closest('article') || button.closest('div[role="presentation"]');
                             if (article) {
-                                console.log('DEBUG: Found article:', article.outerHTML);
+                                log.debug('DEBUG: Found article:', article.outerHTML);
 
                                 // Try to find username in links
                                 const links = article.querySelectorAll('a[role="link"]');
@@ -337,13 +339,13 @@ const randomDelay = async (min, max) => {
                                     const href = link.getAttribute('href');
                                     if (href && href.startsWith('/') && !href.includes('/explore/') && !href.includes('/accounts/')) {
                                         const potentialUsername = href.split('/')[1];
-                                        console.log('DEBUG: Found potential username from href:', potentialUsername);
+                                        log.debug('DEBUG: Found potential username from href:', potentialUsername);
                                         if (isValidUsername(potentialUsername)) return potentialUsername;
                                     }
 
                                     // Try to get username from link text
                                     const linkText = link.textContent.trim();
-                                    console.log('DEBUG: Found link text:', linkText);
+                                    log.debug('DEBUG: Found link text:', linkText);
                                     if (isValidUsername(linkText)) return linkText;
                                 }
 
@@ -351,7 +353,7 @@ const randomDelay = async (min, max) => {
                                 const usernameSpans = article.querySelectorAll('span._ap3a._aaco._aacw._aacx._aad7._aade');
                                 for (const span of usernameSpans) {
                                     const text = span.textContent.trim();
-                                    console.log('DEBUG: Found span text:', text);
+                                    log.debug('DEBUG: Found span text:', text);
                                     if (isValidUsername(text)) return text;
                                 }
                             }
@@ -363,7 +365,7 @@ const randomDelay = async (min, max) => {
                                 for (const link of links) {
                                     if (link.textContent.includes('Follow')) continue;
                                     const text = link.textContent.trim();
-                                    console.log('DEBUG: Found parent link text:', text);
+                                    log.debug('DEBUG: Found parent link text:', text);
                                     if (isValidUsername(text)) return text;
                                 }
                                 current = current.parentElement;
@@ -373,7 +375,7 @@ const randomDelay = async (min, max) => {
                             const container = button.closest('div[role="presentation"]') || button.closest('div._aano');
                             if (container) {
                                 const allText = container.textContent.trim();
-                                console.log('DEBUG: Container text:', allText);
+                                log.debug('DEBUG: Container text:', allText);
                                 const words = allText.split(/[\s\n]+/);
                                 for (const word of words) {
                                     if (isValidUsername(word)) return word;
@@ -394,7 +396,7 @@ const randomDelay = async (min, max) => {
                                 text.includes('Suggested') ||
                                 text.includes('Meta') ||
                                 text.includes('Instagram')) return false;
-                            console.log('DEBUG: Valid username found:', text);
+                            log.debug('DEBUG: Valid username found:', text);
                             return true;
                         }
 
@@ -402,18 +404,18 @@ const randomDelay = async (min, max) => {
                     }, i);
 
                     if (!username) {
-                        console.log('Could not find valid username, skipping...');
+                        log.debug('Could not find valid username, skipping...');
                         continue;
                     }
 
-                    console.log(`Found username: ${username}`);
+                    log.debug(`Found username: ${username}`);
 
                     // Verify the button is still "Follow"
                     const buttonText = await followButtons[i].evaluate(button => button.textContent.trim());
-                    console.log(`Button text: "${buttonText}"`);
+                    log.debug(`Button text: "${buttonText}"`);
 
                     if (buttonText === 'Follow') {
-                        console.log(`Attempting to follow user: ${username}`);
+                        log.info(`Attempting to follow user: ${username}`);
 
                         try {
                             // First verify button is actually clickable
@@ -428,7 +430,7 @@ const randomDelay = async (min, max) => {
                             }, followButtons[i]);
 
                             if (!isClickable) {
-                                console.log('Button is not clickable, attempting to fix...');
+                                log.info('Button is not clickable, attempting to fix...');
                                 await page.evaluate((btn) => {
                                     btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                     btn.style.opacity = '1';
@@ -491,29 +493,29 @@ const randomDelay = async (min, max) => {
                                         };
                                     }, followButtons[i]);
 
-                                    console.log('Button state after click:', buttonState);
+                                    log.debug('Button state after click:', buttonState);
 
                                     if (buttonState.text === 'Following' ||
                                         buttonState.text.includes('Following') ||
                                         buttonState.disabled) {
                                         followSuccess = true;
-                                        console.log('Follow successful using click method');
+                                        log.info('Follow successful using click method');
                                         break;
                                     }
                                 } catch (e) {
-                                    console.log('Click method failed, trying next method...');
+                                    log.debug('Click method failed, trying next method...');
                                 }
                             }
 
                             if (followSuccess) {
-                                console.log('Successfully followed user');
+                                log.info('Successfully followed user');
                                 followCount++;
 
                                 // Update MongoDB with atomic operations
                                 try {
                                     // First, get the current state
                                     const currentState = await followersCollection.findOne({ date: today });
-                                    console.log('Current state before update:', currentState);
+                                    log.debug('Current state before update:', currentState);
 
                                     // Perform the update without storing usernames
                                     const updateResult = await followersCollection.updateOne(
@@ -527,15 +529,15 @@ const randomDelay = async (min, max) => {
                                     );
 
                                     if (updateResult.modifiedCount === 0) {
-                                        console.error('Warning: MongoDB document was not updated!');
-                                        console.log('Update result:', updateResult);
+                                        log.warning('Warning: MongoDB document was not updated!');
+                                        log.debug('Update result:', updateResult);
                                     } else {
-                                        console.log('MongoDB update successful');
+                                        log.info('MongoDB update successful');
                                     }
 
                                     // Verify the update
                                     const updatedDoc = await followersCollection.findOne({ date: today });
-                                    console.log('State after update:', {
+                                    log.debug('State after update:', {
                                         before: {
                                             totalFollowedToday: currentState.totalFollowedToday,
                                             totalFollowing: currentState.totalFollowing
@@ -548,7 +550,7 @@ const randomDelay = async (min, max) => {
 
                                     // Double-check if the update was successful
                                     if (updatedDoc.totalFollowedToday === currentState.totalFollowedToday) {
-                                        console.error('Warning: totalFollowedToday did not increase!');
+                                        log.warning('Warning: totalFollowedToday did not increase!');
                                         // Force update if necessary
                                         await followersCollection.updateOne(
                                             { date: today },
@@ -561,8 +563,8 @@ const randomDelay = async (min, max) => {
                                         );
                                     }
                                 } catch (dbError) {
-                                    console.error('Error updating MongoDB:', dbError);
-                                    console.error('Error details:', {
+                                    log.error('Error updating MongoDB:', dbError);
+                                    log.error('Error details:', {
                                         name: dbError.name,
                                         message: dbError.message,
                                         code: dbError.code
@@ -571,29 +573,29 @@ const randomDelay = async (min, max) => {
 
                                 // Random delay between 10-15 seconds before next follow
                                 const delay = Math.floor(Math.random() * (MAX_FOLLOW_DELAY - MIN_FOLLOW_DELAY + 1)) + MIN_FOLLOW_DELAY;
-                                console.log(`Waiting ${Math.round(delay / 1000)} seconds before next follow...`);
+                                log.debug(`Waiting ${Math.round(delay / 1000)} seconds before next follow...`);
                                 await randomDelay(delay, delay);
                             } else {
-                                console.log(`Follow may have failed. Button text is now: "${buttonText}"`);
+                                log.info(`Follow may have failed. Button text is now: "${buttonText}"`);
                                 // Add a shorter delay even if follow failed (5-8 seconds)
                                 await randomDelay(5000, 8000);
                             }
                         } catch (clickError) {
-                            console.log('Error while trying to follow:', clickError.message);
+                            log.error('Error while trying to follow:', clickError.message);
                             await randomDelay(3000, 5000);
                         }
                     } else {
-                        console.log(`Skipping user ${username} - button shows "${buttonText}"`);
+                        log.info(`Skipping user ${username} - button shows "${buttonText}"`);
                     }
                 } catch (error) {
-                    console.log('Error processing user:', error.message);
+                    log.error('Error processing user:', error.message);
                     continue;
                 }
             }
 
             // If we haven't reached our target, refresh and try again
             if (followCount < MAX_FOLLOWS) {
-                console.log(`\nRefreshing page to get more suggestions (followed ${followCount} so far)...`);
+                log.info(`\nRefreshing page to get more suggestions (followed ${followCount} so far)...`);
                 await page.reload({ waitUntil: 'networkidle0' });
                 await randomDelay(3000, 5000);
 
@@ -601,45 +603,45 @@ const randomDelay = async (min, max) => {
                 try {
                     await page.waitForSelector('button._acan._acap._acas._aj1-', { timeout: 10000 });
                     const newButtonCount = await page.$$eval('button._acan._acap._acas._aj1-', buttons => buttons.length);
-                    console.log(`Found ${newButtonCount} new buttons after refresh`);
+                    log.debug(`Found ${newButtonCount} new buttons after refresh`);
                 } catch (error) {
-                    console.log('Error loading new suggestions:', error.message);
+                    log.error('Error loading new suggestions:', error.message);
                 }
             }
         }
 
-        console.log(`Successfully completed following ${followCount} users!`);
+        log.info(`Successfully completed following ${followCount} users!`);
 
         // Get final stats from database
         const finalStats = await followersCollection.findOne({ date: today });
-        console.log('Today\'s following statistics:');
-        console.log(`Total followed today: ${finalStats.totalFollowedToday}`);
-        console.log(`Total followers: ${finalStats.totalFollowers}`);
-        console.log(`Total following: ${finalStats.totalFollowing}`);
+        log.info('Today\'s following statistics:');
+        log.info(`Total followed today: ${finalStats.totalFollowedToday}`);
+        log.info(`Total followers: ${finalStats.totalFollowers}`);
+        log.info(`Total following: ${finalStats.totalFollowing}`);
 
         await browser.close();
-        console.log('Browser closed. Script finished.');
+        log.info('Browser closed. Script finished.');
     } catch (error) {
-        console.error('An error occurred:', error.message);
-        console.error('Stack trace:', error.stack);
-        console.log(`Managed to follow ${followCount} people before the error occurred.`);
+        log.error('An error occurred:', error.message);
+        log.error('Stack trace:', error.stack);
+        log.info(`Managed to follow ${followCount} people before the error occurred.`);
 
         // Take a screenshot if there's an error
         if (page) {
             try {
                 await page.screenshot({ path: 'error-screenshot.png', fullPage: true });
-                console.log('Error screenshot saved as error-screenshot.png');
+                log.info('Error screenshot saved as error-screenshot.png');
             } catch (screenshotError) {
-                console.error('Failed to take error screenshot:', screenshotError.message);
+                log.error('Failed to take error screenshot:', screenshotError.message);
             }
         }
 
         if (browser) {
             try {
                 await browser.close();
-                console.log('Browser closed after error.');
+                log.info('Browser closed after error.');
             } catch (e) {
-                console.error('Failed to close browser:', e.message);
+                log.error('Failed to close browser:', e.message);
             }
         }
         process.exit(1);
