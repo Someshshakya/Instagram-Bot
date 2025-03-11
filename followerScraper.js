@@ -75,7 +75,7 @@ const randomDelay = async (min, max) => {
             ignoreHTTPSErrors: true
         });
 
-        console.log('Browser launched successfully');
+        log.success('Browser launched successfully');
         page = await browser.newPage();
 
         // Add additional headers
