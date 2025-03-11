@@ -59,23 +59,49 @@ const randomDelay = async (min, max) => {
                 '--disable-gpu',
                 '--window-size=1920,1080',
                 '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process'
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-blink-features=AutomationControlled'
             ],
-            executablePath: isCI ? process.env.CHROME_PATH : undefined
+            executablePath: isCI ? process.env.CHROME_PATH : undefined,
+            ignoreHTTPSErrors: true
         });
 
         console.log('Browser launched successfully');
         page = await browser.newPage();
 
-        // Set user agent to look more like a real browser
+        // Add additional headers
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"'
+        });
+
+        // Set user agent
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
 
         // Set a longer default timeout
         page.setDefaultTimeout(60000);
 
-        console.log('Navigating to Instagram login page...');
-        await page.goto('https://www.instagram.com/', { waitUntil: 'networkidle0' });
-        await randomDelay(2000, 4000);
+        // Add error handling for navigation
+        try {
+            console.log('Navigating to Instagram login page...');
+            const response = await page.goto('https://www.instagram.com/', {
+                waitUntil: ['networkidle0', 'domcontentloaded'],
+                timeout: 60000
+            });
+
+            if (!response.ok()) {
+                throw new Error(`Failed to load Instagram: ${response.status()} ${response.statusText()}`);
+            }
+
+            console.log('Instagram page loaded successfully');
+        } catch (error) {
+            console.error('Navigation error:', error);
+            await page.screenshot({ path: 'navigation-error.png', fullPage: true });
+            throw error;
+        }
 
         console.log('Attempting to login...');
         await page.waitForSelector('input[name="username"]', { visible: true });
