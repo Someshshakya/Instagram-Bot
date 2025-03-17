@@ -63,6 +63,22 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
     }
 };
 
+// Add this helper function at the top level
+async function verifyFollowSuccess(button) {
+    const buttonState = await page.evaluate(btn => {
+        return {
+            text: btn.textContent.trim(),
+            classes: btn.className,
+            disabled: btn.disabled,
+            visible: btn.offsetParent !== null
+        };
+    }, button);
+
+    return buttonState.text === 'Following' ||
+        buttonState.text.includes('Following') ||
+        buttonState.disabled;
+}
+
 (async () => {
     let browser;
     let page;
@@ -187,106 +203,88 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
         log.info('🌐 Navigating to Instagram...');
         await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
 
-        // Enhanced login state check
+        // Check if login is required
         let loginRequired = false;
         try {
-            // Wait for either login form or home icon
-            const loginState = await Promise.race([
-                page.waitForSelector('input[name="username"]', { timeout: 5000 })
-                    .then(() => ({ state: 'login_required' })),
-                page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 })
-                    .then(() => ({ state: 'logged_in' })),
-                page.waitForSelector('div[role="dialog"]', { timeout: 5000 })
-                    .then(() => ({ state: 'dialog' }))
-            ]).catch(() => ({ state: 'unknown' }));
-
-            log.debug('Login state check result:', loginState);
-
-            switch (loginState.state) {
-                case 'login_required':
-                    loginRequired = true;
-                    log.info('🔒 Login required - no valid session found');
-                    break;
-                case 'logged_in':
-                    log.success('✅ Successfully verified logged in state');
-                    break;
-                case 'dialog':
-                    const dialogText = await page.evaluate(() => {
-                        const dialog = document.querySelector('div[role="dialog"]');
-                        return dialog ? dialog.textContent : '';
-                    });
-                    log.warning(`⚠️ Found dialog: ${dialogText}`);
-                    loginRequired = true;
-                    break;
-                case 'unknown':
-                    log.warning('⚠️ Could not determine login state, proceeding with login');
-                    loginRequired = true;
-                    break;
-            }
-
-            // Additional verification of login state
-            if (!loginRequired) {
-                try {
-                    // Try to access profile page to verify login
-                    await page.goto(`https://www.instagram.com/${process.env.INSTAGRAM_USERNAME}/`, { waitUntil: 'networkidle2' });
-                    await page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 });
-                    log.success('✅ Login state verified through profile access');
-                } catch (error) {
-                    log.warning('⚠️ Failed to verify login through profile access, proceeding with login');
-                    loginRequired = true;
-                }
-            }
-        } catch (error) {
-            log.error('❌ Error checking login state:', error.message);
+            await page.waitForSelector('input[name="username"]', { timeout: 5000 });
             loginRequired = true;
+        } catch (err) {
+            log.success('✅ Already logged in!');
         }
 
         if (loginRequired) {
-            log.security('🔒 Starting login process...');
+            log.security('🔒 Logging in...');
             await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
 
-            // Clear any existing cookies
-            await page.deleteCookie();
-            log.debug('Cleared existing cookies');
+            // Add random delay before typing
+            await randomDelay(1000, 2000);
 
             // Enter credentials with realistic typing delay
             await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
+            await randomDelay(500, 1000);
             await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
+            await randomDelay(500, 1000);
 
-            // Wait a bit before clicking login
-            await randomDelay(1000, 2000);
+            // Click login button with mouse movement
+            const loginButton = await page.waitForSelector('button[type="submit"]');
+            const buttonBox = await loginButton.boundingBox();
+            if (buttonBox) {
+                await page.mouse.move(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2);
+                await randomDelay(200, 500);
+                await page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2);
+            }
 
-            await page.click('button[type="submit"]');
-
-            // Wait for login process with better error handling
+            // Wait for various possible outcomes
             try {
                 await Promise.race([
-                    page.waitForSelector('svg[aria-label="Home"]', { timeout: 30000 }),
-                    page.waitForSelector('input[name="verificationCode"]', { timeout: 30000 })
-                        .then(() => { throw new Error('Verification code required'); }),
-                    page.waitForSelector('p[data-testid="login-error-message"]', { timeout: 30000 })
-                        .then(async () => {
-                            const errorText = await page.evaluate(() => {
-                                const error = document.querySelector('p[data-testid="login-error-message"]');
-                                return error ? error.textContent : 'Unknown error';
-                            });
-                            throw new Error(`Login error: ${errorText}`);
-                        })
+                    page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 30000 }),
+                    page.waitForSelector('input[name="verificationCode"]', { visible: true, timeout: 30000 }),
+                    page.waitForSelector('p[data-testid="login-error-message"]', { visible: true, timeout: 30000 }),
+                    page.waitForSelector('div[role="dialog"]', { visible: true, timeout: 30000 })
                 ]);
 
-                // Save cookies after successful login
-                const cookies = await page.cookies();
-                fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies));
-                log.security('✅ Login successful! Cookies saved.');
-                log.debug(`Saved ${cookies.length} cookies`);
+                // Check for error message
+                const errorMessage = await page.$('p[data-testid="login-error-message"]');
+                if (errorMessage) {
+                    const error = await page.evaluate(el => el.textContent, errorMessage);
+                    throw new Error(`Instagram login failed: ${error}`);
+                }
 
-                // Verify login state one more time
-                await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
-                await page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 });
-                log.success('✅ Login state verified after cookie save');
+                // Check for verification code request
+                const verificationCode = await page.$('input[name="verificationCode"]');
+                if (verificationCode) {
+                    log.warning('⚠️ Instagram requires verification code. Please check your email/phone.');
+                    await page.screenshot({ path: 'verification-needed.png', fullPage: true });
+                    throw new Error('Verification code required');
+                }
+
+                // Check for suspicious login attempt dialog
+                const suspiciousLogin = await page.$('div[role="dialog"]');
+                if (suspiciousLogin) {
+                    const dialogText = await page.evaluate(el => el.textContent, suspiciousLogin);
+                    if (dialogText.includes('suspicious') || dialogText.includes('unusual')) {
+                        log.warning('⚠️ Instagram detected suspicious login attempt.');
+                        await page.screenshot({ path: 'suspicious-login.png', fullPage: true });
+                        throw new Error('Suspicious login detected');
+                    }
+                }
+
+                // Verify we're actually logged in
+                const homeIcon = await page.$('svg[aria-label="Home"]');
+                if (homeIcon) {
+                    log.success('✅ Login successful!');
+
+                    // Save cookies after successful login
+                    const cookies = await page.cookies();
+                    fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies));
+                    log.security('✅ Cookies saved successfully');
+                    log.debug(`Saved ${cookies.length} cookies`);
+                } else {
+                    throw new Error('Login verification failed - no home icon found');
+                }
 
             } catch (error) {
-                log.error('❌ Login failed:', error.message);
+                log.error('Login process error:', error.message);
                 await page.screenshot({ path: 'login-error.png', fullPage: true });
                 throw error;
             }
@@ -296,42 +294,17 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
         const cookies = await page.cookies();
         const expiredCookies = cookies.filter(cookie => cookie.expires && cookie.expires < Date.now() / 1000);
         if (expiredCookies.length > 0) {
-            log.warning(`⚠️ Found ${expiredCookies.length} expired cookies!`);
-
-            // Only re-login if we're not already logged in
-            try {
-                await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
-                await page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 });
-                log.success('✅ Still logged in despite expired cookies, continuing...');
-            } catch (error) {
-                log.warning('⚠️ Session invalid, proceeding with re-login...');
-                fs.unlinkSync(COOKIE_PATH); // Delete expired cookies
-
-                // Re-run login process
-                await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
-                await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
-                await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
-                await page.click('button[type="submit"]');
-
-                // Wait for login process
-                await Promise.race([
-                    page.waitForSelector('svg[aria-label="Home"]', { timeout: 30000 }),
-                    page.waitForSelector('input[name="verificationCode"]', { timeout: 30000 })
-                        .then(() => { throw new Error('Verification code required'); }),
-                    page.waitForSelector('p[data-testid="login-error-message"]', { timeout: 30000 })
-                        .then(async () => {
-                            const errorText = await page.evaluate(() => {
-                                const error = document.querySelector('p[data-testid="login-error-message"]');
-                                return error ? error.textContent : 'Unknown error';
-                            });
-                            throw new Error(`Login error: ${errorText}`);
-                        })
-                ]);
-
-                const newCookies = await page.cookies();
-                fs.writeFileSync(COOKIE_PATH, JSON.stringify(newCookies));
-                log.security('✅ Re-login successful! New cookies saved.');
-            }
+            log.warning(`⚠️ Found ${expiredCookies.length} expired cookies! Re-logging in...`);
+            fs.unlinkSync(COOKIE_PATH); // Delete expired cookies
+            // Re-run login process
+            await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+            await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
+            await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
+            await page.click('button[type="submit"]');
+            await page.waitForNavigation({ waitUntil: 'networkidle2' });
+            const newCookies = await page.cookies();
+            fs.writeFileSync(COOKIE_PATH, JSON.stringify(newCookies));
+            log.security('✅ Re-login successful! New cookies saved.');
         }
 
         // Save initial session state
@@ -454,7 +427,9 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
                 'button._acan._acap._acas._aj1-',
                 'button[type="button"]._acan._acap._acas',
                 'button._acan._acap._acas',
-                'button[type="button"]:not([disabled])'
+                'button[type="button"]:not([disabled])',
+                'button:has-text("Follow")',
+                'button:has-text("Follow Back")'
             ];
 
             let followButtons = [];
@@ -479,12 +454,38 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
                 continue;
             }
 
-            // Filter out any non-follow buttons
+            // Filter out any non-follow buttons with enhanced verification
             const validButtons = [];
             for (const button of followButtons) {
-                const buttonText = await button.evaluate(el => el.textContent.trim().toLowerCase());
-                if (buttonText === 'follow') {
-                    validButtons.push(button);
+                try {
+                    const buttonState = await page.evaluate(btn => {
+                        const text = btn.textContent.trim().toLowerCase();
+                        const isVisible = btn.offsetParent !== null;
+                        const isEnabled = !btn.disabled;
+                        const style = window.getComputedStyle(btn);
+                        const isClickable = style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            style.opacity !== '0';
+
+                        return {
+                            text,
+                            isVisible,
+                            isEnabled,
+                            isClickable,
+                            classes: btn.className
+                        };
+                    }, button);
+
+                    log.debug('Button state:', buttonState);
+
+                    if (buttonState.text === 'follow' &&
+                        buttonState.isVisible &&
+                        buttonState.isEnabled &&
+                        buttonState.isClickable) {
+                        validButtons.push(button);
+                    }
+                } catch (e) {
+                    log.debug('Error checking button state:', e.message);
                 }
             }
             followButtons = validButtons;
@@ -518,110 +519,73 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
                 try {
                     log.debug(`\nProcessing user ${i + 1}:`);
 
-                    // First, ensure the button is in view
+                    // First, ensure the button is in view and clickable
                     await followButtons[i].evaluate(button => {
                         button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        // Ensure button is clickable
+                        button.style.opacity = '1';
+                        button.style.visibility = 'visible';
+                        button.style.display = 'block';
+                        button.style.pointerEvents = 'auto';
                     });
                     await randomDelay(1000, 2000);
 
-                    // Get username using multiple approaches
+                    // Get username with enhanced error handling
                     const username = await page.evaluate(async (buttonIndex) => {
                         const button = document.querySelectorAll('button._acan._acap._acas._aj1-')[buttonIndex];
-                        if (!button) {
-                            console.log('DEBUG: Button not found');
-                            return null;
-                        }
+                        if (!button) return null;
 
-                        // Log the entire parent structure for debugging
-                        let parent = button.parentElement;
-                        let depth = 0;
-                        let parentChain = [];
-                        while (parent && depth < 5) {
-                            parentChain.push({
-                                tag: parent.tagName,
-                                classes: parent.className,
-                                html: parent.outerHTML
-                            });
-                            parent = parent.parentElement;
-                            depth++;
-                        }
-                        console.log('DEBUG: Parent chain:', JSON.stringify(parentChain, null, 2));
-
-                        // Try different methods to find the username
-                        const findUsername = () => {
-                            // Method 1: Find closest article and get username from link
-                            const article = button.closest('article') || button.closest('div[role="presentation"]');
-                            if (article) {
-                                console.log('DEBUG: Found article:', article.outerHTML);
-
-                                // Try to find username in links
+                        // Try multiple methods to find username
+                        const methods = [
+                            // Method 1: Find in article
+                            () => {
+                                const article = button.closest('article');
+                                if (!article) return null;
                                 const links = article.querySelectorAll('a[role="link"]');
                                 for (const link of links) {
                                     const href = link.getAttribute('href');
-                                    if (href && href.startsWith('/') && !href.includes('/explore/') && !href.includes('/accounts/')) {
-                                        const potentialUsername = href.split('/')[1];
-                                        console.log('DEBUG: Found potential username from href:', potentialUsername);
-                                        if (isValidUsername(potentialUsername)) return potentialUsername;
+                                    if (href && href.startsWith('/') && !href.includes('/explore/')) {
+                                        return href.split('/')[1];
                                     }
-
-                                    // Try to get username from link text
-                                    const linkText = link.textContent.trim();
-                                    console.log('DEBUG: Found link text:', linkText);
-                                    if (isValidUsername(linkText)) return linkText;
                                 }
-
-                                // Try to find username in spans with specific classes
-                                const usernameSpans = article.querySelectorAll('span._ap3a._aaco._aacw._aacx._aad7._aade');
-                                for (const span of usernameSpans) {
-                                    const text = span.textContent.trim();
-                                    console.log('DEBUG: Found span text:', text);
-                                    if (isValidUsername(text)) return text;
+                                return null;
+                            },
+                            // Method 2: Find in parent elements
+                            () => {
+                                let current = button.parentElement;
+                                while (current) {
+                                    const links = current.querySelectorAll('a[role="link"]');
+                                    for (const link of links) {
+                                        const text = link.textContent.trim();
+                                        if (text && !text.includes('Follow')) {
+                                            return text;
+                                        }
+                                    }
+                                    current = current.parentElement;
                                 }
-                            }
-
-                            // Method 2: Look for username in parent elements
-                            let current = button.parentElement;
-                            while (current) {
-                                const links = current.querySelectorAll('a[role="link"]');
-                                for (const link of links) {
-                                    if (link.textContent.includes('Follow')) continue;
-                                    const text = link.textContent.trim();
-                                    console.log('DEBUG: Found parent link text:', text);
-                                    if (isValidUsername(text)) return text;
-                                }
-                                current = current.parentElement;
-                            }
-
-                            // Method 3: Try to find username in nearby elements
-                            const container = button.closest('div[role="presentation"]') || button.closest('div._aano');
-                            if (container) {
-                                const allText = container.textContent.trim();
-                                console.log('DEBUG: Container text:', allText);
-                                const words = allText.split(/[\s\n]+/);
+                                return null;
+                            },
+                            // Method 3: Find in nearby text
+                            () => {
+                                const container = button.closest('div[role="presentation"]');
+                                if (!container) return null;
+                                const text = container.textContent.trim();
+                                const words = text.split(/[\s\n]+/);
                                 for (const word of words) {
-                                    if (isValidUsername(word)) return word;
+                                    if (word && !word.includes('Follow') && word.length > 3) {
+                                        return word;
+                                    }
                                 }
+                                return null;
                             }
+                        ];
 
-                            return null;
-                        };
-
-                        // Username validation helper
-                        function isValidUsername(text) {
-                            if (!text) return false;
-                            if (text.length === 0 || text.length >= 31) return false;
-                            if (text.includes(' ')) return false;
-                            if (/[^\w.]/.test(text)) return false;
-                            if (text.includes('Follow') ||
-                                text.includes('Following') ||
-                                text.includes('Suggested') ||
-                                text.includes('Meta') ||
-                                text.includes('Instagram')) return false;
-                            console.log('DEBUG: Valid username found:', text);
-                            return true;
+                        // Try each method until we find a username
+                        for (const method of methods) {
+                            const result = method();
+                            if (result) return result;
                         }
-
-                        return findUsername();
+                        return null;
                     }, i);
 
                     if (!username) {
@@ -638,172 +602,129 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
                     if (buttonText === 'Follow') {
                         log.info(`Attempting to follow user: ${username}`);
 
-                        try {
-                            // First verify button is actually clickable
-                            const isClickable = await page.evaluate((btn) => {
-                                const style = window.getComputedStyle(btn);
-                                const rect = btn.getBoundingClientRect();
-                                return style.display !== 'none' &&
-                                    style.visibility !== 'hidden' &&
-                                    style.opacity !== '0' &&
-                                    rect.width > 0 &&
-                                    rect.height > 0;
-                            }, followButtons[i]);
-
-                            if (!isClickable) {
-                                log.info('Button is not clickable, attempting to fix...');
+                        // Try multiple click methods with verification
+                        let followSuccess = false;
+                        const clickMethods = [
+                            // Method 1: Direct click with verification
+                            async () => {
+                                await followButtons[i].click({ delay: 100 });
+                                await randomDelay(1000, 2000);
+                                return await verifyFollowSuccess(followButtons[i]);
+                            },
+                            // Method 2: Mouse move and click with verification
+                            async () => {
+                                const box = await followButtons[i].boundingBox();
+                                if (box) {
+                                    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+                                    await randomDelay(200, 500);
+                                    await page.mouse.down();
+                                    await randomDelay(50, 150);
+                                    await page.mouse.up();
+                                }
+                                await randomDelay(1000, 2000);
+                                return await verifyFollowSuccess(followButtons[i]);
+                            },
+                            // Method 3: JavaScript click with verification
+                            async () => {
                                 await page.evaluate((btn) => {
-                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                    btn.style.opacity = '1';
-                                    btn.style.visibility = 'visible';
-                                    btn.style.display = 'block';
+                                    btn.click();
+                                    const clickEvent = new MouseEvent('click', {
+                                        view: window,
+                                        bubbles: true,
+                                        cancelable: true
+                                    });
+                                    btn.dispatchEvent(clickEvent);
                                 }, followButtons[i]);
                                 await randomDelay(1000, 2000);
+                                return await verifyFollowSuccess(followButtons[i]);
                             }
+                        ];
 
-                            // Try multiple click methods with verification
-                            let followSuccess = false;
-                            const clickMethods = [
-                                // Method 1: Direct Puppeteer click
-                                async () => {
-                                    await followButtons[i].click({ delay: 100 });
-                                    await randomDelay(1000, 2000);
-                                },
-                                // Method 2: Mouse move and click
-                                async () => {
-                                    const box = await followButtons[i].boundingBox();
-                                    if (box) {
-                                        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-                                        await randomDelay(200, 500);
-                                        await page.mouse.down();
-                                        await randomDelay(50, 150);
-                                        await page.mouse.up();
-                                    }
-                                    await randomDelay(1000, 2000);
-                                },
-                                // Method 3: JavaScript click
-                                async () => {
-                                    await page.evaluate((btn) => {
-                                        btn.click();
-                                        // Dispatch click event as backup
-                                        const clickEvent = new MouseEvent('click', {
-                                            view: window,
-                                            bubbles: true,
-                                            cancelable: true
-                                        });
-                                        btn.dispatchEvent(clickEvent);
-                                    }, followButtons[i]);
-                                    await randomDelay(1000, 2000);
+                        // Try each click method until one works
+                        for (const clickMethod of clickMethods) {
+                            if (followSuccess) break;
+                            try {
+                                followSuccess = await clickMethod();
+                                if (followSuccess) {
+                                    log.info('Follow successful using click method');
+                                    break;
                                 }
-                            ];
-
-                            // Try each click method until one works
-                            for (const clickMethod of clickMethods) {
-                                if (followSuccess) break;
-
-                                try {
-                                    await clickMethod();
-
-                                    // Verify the follow was successful
-                                    const buttonState = await page.evaluate(btn => {
-                                        return {
-                                            text: btn.textContent.trim(),
-                                            classes: btn.className,
-                                            disabled: btn.disabled,
-                                            visible: btn.offsetParent !== null
-                                        };
-                                    }, followButtons[i]);
-
-                                    log.debug('Button state after click:', buttonState);
-
-                                    if (buttonState.text === 'Following' ||
-                                        buttonState.text.includes('Following') ||
-                                        buttonState.disabled) {
-                                        followSuccess = true;
-                                        log.info('Follow successful using click method');
-                                        break;
-                                    }
-                                } catch (e) {
-                                    log.debug('Click method failed, trying next method...');
-                                }
+                            } catch (e) {
+                                log.debug('Click method failed, trying next method...');
                             }
+                        }
 
-                            if (followSuccess) {
-                                log.info('Successfully followed user');
-                                followCount++;
+                        if (followSuccess) {
+                            log.info('Successfully followed user');
+                            followCount++;
 
-                                // Update MongoDB with atomic operations
-                                try {
-                                    // First, get the current state
-                                    const currentState = await followersCollection.findOne({ date: today });
-                                    log.debug('Current state before update:', currentState);
+                            // Update MongoDB with atomic operations
+                            try {
+                                // First, get the current state
+                                const currentState = await followersCollection.findOne({ date: today });
+                                log.debug('Current state before update:', currentState);
 
-                                    // Perform the update without storing usernames
-                                    const updateResult = await followersCollection.updateOne(
+                                // Perform the update without storing usernames
+                                const updateResult = await followersCollection.updateOne(
+                                    { date: today },
+                                    {
+                                        $inc: {
+                                            totalFollowedToday: 1,
+                                            totalFollowing: 1
+                                        }
+                                    }
+                                );
+
+                                if (updateResult.modifiedCount === 0) {
+                                    log.warning('Warning: MongoDB document was not updated!');
+                                    log.debug('Update result:', updateResult);
+                                } else {
+                                    log.info('MongoDB update successful');
+                                }
+
+                                // Verify the update
+                                const updatedDoc = await followersCollection.findOne({ date: today });
+                                log.debug('State after update:', {
+                                    before: {
+                                        totalFollowedToday: currentState.totalFollowedToday,
+                                        totalFollowing: currentState.totalFollowing
+                                    },
+                                    after: {
+                                        totalFollowedToday: updatedDoc.totalFollowedToday,
+                                        totalFollowing: updatedDoc.totalFollowing
+                                    }
+                                });
+
+                                // Double-check if the update was successful
+                                if (updatedDoc.totalFollowedToday === currentState.totalFollowedToday) {
+                                    log.warning('Warning: totalFollowedToday did not increase!');
+                                    // Force update if necessary
+                                    await followersCollection.updateOne(
                                         { date: today },
                                         {
-                                            $inc: {
-                                                totalFollowedToday: 1,
-                                                totalFollowing: 1
+                                            $set: {
+                                                totalFollowedToday: (currentState.totalFollowedToday || 0) + 1,
+                                                totalFollowing: (currentState.totalFollowing || 0) + 1
                                             }
                                         }
                                     );
-
-                                    if (updateResult.modifiedCount === 0) {
-                                        log.warning('Warning: MongoDB document was not updated!');
-                                        log.debug('Update result:', updateResult);
-                                    } else {
-                                        log.info('MongoDB update successful');
-                                    }
-
-                                    // Verify the update
-                                    const updatedDoc = await followersCollection.findOne({ date: today });
-                                    log.debug('State after update:', {
-                                        before: {
-                                            totalFollowedToday: currentState.totalFollowedToday,
-                                            totalFollowing: currentState.totalFollowing
-                                        },
-                                        after: {
-                                            totalFollowedToday: updatedDoc.totalFollowedToday,
-                                            totalFollowing: updatedDoc.totalFollowing
-                                        }
-                                    });
-
-                                    // Double-check if the update was successful
-                                    if (updatedDoc.totalFollowedToday === currentState.totalFollowedToday) {
-                                        log.warning('Warning: totalFollowedToday did not increase!');
-                                        // Force update if necessary
-                                        await followersCollection.updateOne(
-                                            { date: today },
-                                            {
-                                                $set: {
-                                                    totalFollowedToday: (currentState.totalFollowedToday || 0) + 1,
-                                                    totalFollowing: (currentState.totalFollowing || 0) + 1
-                                                }
-                                            }
-                                        );
-                                    }
-                                } catch (dbError) {
-                                    log.error('Error updating MongoDB:', dbError);
-                                    log.error('Error details:', {
-                                        name: dbError.name,
-                                        message: dbError.message,
-                                        code: dbError.code
-                                    });
                                 }
-
-                                // Random delay between 10-15 seconds before next follow
-                                const delay = Math.floor(Math.random() * (MAX_FOLLOW_DELAY - MIN_FOLLOW_DELAY + 1)) + MIN_FOLLOW_DELAY;
-                                log.debug(`Waiting ${Math.round(delay / 1000)} seconds before next follow...`);
-                                await randomDelay(delay, delay);
-                            } else {
-                                log.info(`Follow may have failed. Button text is now: "${buttonText}"`);
-                                // Add a shorter delay even if follow failed (5-8 seconds)
-                                await randomDelay(5000, 8000);
+                            } catch (dbError) {
+                                log.error('Error updating MongoDB:', dbError);
+                                log.error('Error details:', {
+                                    name: dbError.name,
+                                    message: dbError.message,
+                                    code: dbError.code
+                                });
                             }
-                        } catch (clickError) {
-                            log.error('Error while trying to follow:', clickError.message);
-                            await randomDelay(3000, 5000);
+
+                            // Random delay between 10-15 seconds before next follow
+                            const delay = Math.floor(Math.random() * (MAX_FOLLOW_DELAY - MIN_FOLLOW_DELAY + 1)) + MIN_FOLLOW_DELAY;
+                            log.debug(`Waiting ${Math.round(delay / 1000)} seconds before next follow...`);
+                            await randomDelay(delay, delay);
+                        } else {
+                            log.info(`Follow may have failed. Button text is now: "${buttonText}"`);
+                            await randomDelay(5000, 8000);
                         }
                     } else {
                         log.info(`Skipping user ${username} - button shows "${buttonText}"`);
