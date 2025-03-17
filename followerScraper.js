@@ -187,32 +187,109 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
         log.info('🌐 Navigating to Instagram...');
         await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
 
-        // Check if login is required
+        // Enhanced login state check
         let loginRequired = false;
         try {
-            await page.waitForSelector('input[name="username"]', { timeout: 5000 });
+            // Wait for either login form or home icon
+            const loginState = await Promise.race([
+                page.waitForSelector('input[name="username"]', { timeout: 5000 })
+                    .then(() => ({ state: 'login_required' })),
+                page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 })
+                    .then(() => ({ state: 'logged_in' })),
+                page.waitForSelector('div[role="dialog"]', { timeout: 5000 })
+                    .then(() => ({ state: 'dialog' }))
+            ]).catch(() => ({ state: 'unknown' }));
+
+            log.debug('Login state check result:', loginState);
+
+            switch (loginState.state) {
+                case 'login_required':
+                    loginRequired = true;
+                    log.info('🔒 Login required - no valid session found');
+                    break;
+                case 'logged_in':
+                    log.success('✅ Successfully verified logged in state');
+                    break;
+                case 'dialog':
+                    const dialogText = await page.evaluate(() => {
+                        const dialog = document.querySelector('div[role="dialog"]');
+                        return dialog ? dialog.textContent : '';
+                    });
+                    log.warning(`⚠️ Found dialog: ${dialogText}`);
+                    loginRequired = true;
+                    break;
+                case 'unknown':
+                    log.warning('⚠️ Could not determine login state, proceeding with login');
+                    loginRequired = true;
+                    break;
+            }
+
+            // Additional verification of login state
+            if (!loginRequired) {
+                try {
+                    // Try to access profile page to verify login
+                    await page.goto(`https://www.instagram.com/${process.env.INSTAGRAM_USERNAME}/`, { waitUntil: 'networkidle2' });
+                    await page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 });
+                    log.success('✅ Login state verified through profile access');
+                } catch (error) {
+                    log.warning('⚠️ Failed to verify login through profile access, proceeding with login');
+                    loginRequired = true;
+                }
+            }
+        } catch (error) {
+            log.error('❌ Error checking login state:', error.message);
             loginRequired = true;
-        } catch (err) {
-            log.success('✅ Already logged in!');
         }
 
         if (loginRequired) {
-            log.security('🔒 Logging in...');
+            log.security('🔒 Starting login process...');
             await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+
+            // Clear any existing cookies
+            await page.deleteCookie();
+            log.debug('Cleared existing cookies');
 
             // Enter credentials with realistic typing delay
             await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
             await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
+
+            // Wait a bit before clicking login
+            await randomDelay(1000, 2000);
+
             await page.click('button[type="submit"]');
 
-            // Wait for login process
-            await page.waitForNavigation({ waitUntil: 'networkidle2' });
+            // Wait for login process with better error handling
+            try {
+                await Promise.race([
+                    page.waitForSelector('svg[aria-label="Home"]', { timeout: 30000 }),
+                    page.waitForSelector('input[name="verificationCode"]', { timeout: 30000 })
+                        .then(() => { throw new Error('Verification code required'); }),
+                    page.waitForSelector('p[data-testid="login-error-message"]', { timeout: 30000 })
+                        .then(async () => {
+                            const errorText = await page.evaluate(() => {
+                                const error = document.querySelector('p[data-testid="login-error-message"]');
+                                return error ? error.textContent : 'Unknown error';
+                            });
+                            throw new Error(`Login error: ${errorText}`);
+                        })
+                ]);
 
-            // Save cookies after successful login
-            const cookies = await page.cookies();
-            fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies));
-            log.security('✅ Login successful! Cookies saved.');
-            log.debug(`Saved ${cookies.length} cookies`);
+                // Save cookies after successful login
+                const cookies = await page.cookies();
+                fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies));
+                log.security('✅ Login successful! Cookies saved.');
+                log.debug(`Saved ${cookies.length} cookies`);
+
+                // Verify login state one more time
+                await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
+                await page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 });
+                log.success('✅ Login state verified after cookie save');
+
+            } catch (error) {
+                log.error('❌ Login failed:', error.message);
+                await page.screenshot({ path: 'login-error.png', fullPage: true });
+                throw error;
+            }
         }
 
         // Check for expired cookies
