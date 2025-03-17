@@ -296,17 +296,42 @@ const saveSessionState = async (followCount, lastFollowedUser) => {
         const cookies = await page.cookies();
         const expiredCookies = cookies.filter(cookie => cookie.expires && cookie.expires < Date.now() / 1000);
         if (expiredCookies.length > 0) {
-            log.warning(`⚠️ Found ${expiredCookies.length} expired cookies! Re-logging in...`);
-            fs.unlinkSync(COOKIE_PATH); // Delete expired cookies
-            // Re-run login process
-            await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
-            await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
-            await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
-            await page.click('button[type="submit"]');
-            await page.waitForNavigation({ waitUntil: 'networkidle2' });
-            const newCookies = await page.cookies();
-            fs.writeFileSync(COOKIE_PATH, JSON.stringify(newCookies));
-            log.security('✅ Re-login successful! New cookies saved.');
+            log.warning(`⚠️ Found ${expiredCookies.length} expired cookies!`);
+
+            // Only re-login if we're not already logged in
+            try {
+                await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
+                await page.waitForSelector('svg[aria-label="Home"]', { timeout: 5000 });
+                log.success('✅ Still logged in despite expired cookies, continuing...');
+            } catch (error) {
+                log.warning('⚠️ Session invalid, proceeding with re-login...');
+                fs.unlinkSync(COOKIE_PATH); // Delete expired cookies
+
+                // Re-run login process
+                await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+                await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
+                await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
+                await page.click('button[type="submit"]');
+
+                // Wait for login process
+                await Promise.race([
+                    page.waitForSelector('svg[aria-label="Home"]', { timeout: 30000 }),
+                    page.waitForSelector('input[name="verificationCode"]', { timeout: 30000 })
+                        .then(() => { throw new Error('Verification code required'); }),
+                    page.waitForSelector('p[data-testid="login-error-message"]', { timeout: 30000 })
+                        .then(async () => {
+                            const errorText = await page.evaluate(() => {
+                                const error = document.querySelector('p[data-testid="login-error-message"]');
+                                return error ? error.textContent : 'Unknown error';
+                            });
+                            throw new Error(`Login error: ${errorText}`);
+                        })
+                ]);
+
+                const newCookies = await page.cookies();
+                fs.writeFileSync(COOKIE_PATH, JSON.stringify(newCookies));
+                log.security('✅ Re-login successful! New cookies saved.');
+            }
         }
 
         // Save initial session state
