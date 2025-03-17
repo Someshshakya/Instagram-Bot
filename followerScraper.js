@@ -1,14 +1,28 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const userAgent = require('user-agents');
+const fs = require('fs');
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
 
-// Custom logging function
+// Initialize puppeteer with StealthPlugin
+puppeteer.use(StealthPlugin());
+
+// Constants for cookie management
+const COOKIE_PATH = 'cookies.json';
+const INSTAGRAM_URL = 'https://www.instagram.com/';
+const LOGIN_URL = 'https://www.instagram.com/accounts/login/';
+
+// Enhanced logging function with timestamps and emojis
 const log = {
     info: (message) => console.log(`[INSTA-BOT] ℹ️ ${new Date().toISOString()} - ${message}`),
     success: (message) => console.log(`[INSTA-BOT] ✅ ${new Date().toISOString()} - ${message}`),
     warning: (message) => console.log(`[INSTA-BOT] ⚠️ ${new Date().toISOString()} - ${message}`),
     error: (message) => console.error(`[INSTA-BOT] ❌ ${new Date().toISOString()} - ${message}`),
-    debug: (message) => console.log(`[INSTA-BOT] 🔍 ${new Date().toISOString()} - ${message}`)
+    debug: (message) => console.log(`[INSTA-BOT] 🔍 ${new Date().toISOString()} - ${message}`),
+    stats: (message) => console.log(`[INSTA-BOT] 📊 ${new Date().toISOString()} - ${message}`),
+    security: (message) => console.log(`[INSTA-BOT] 🔒 ${new Date().toISOString()} - ${message}`),
+    browser: (message) => console.log(`[INSTA-BOT] 🌐 ${new Date().toISOString()} - ${message}`)
 };
 
 // Use MongoDB URL from environment variables with fallback
@@ -25,32 +39,58 @@ const MAX_FOLLOW_DELAY = 15000; // Maximum delay between follows (15 seconds)
 // Random delay function to make actions more human-like
 const randomDelay = async (min, max) => {
     const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+    log.debug(`Waiting for ${Math.round(delay / 1000)} seconds...`);
     await new Promise(resolve => setTimeout(resolve, delay));
+};
+
+// Function to save session state
+const saveSessionState = async (followCount, lastFollowedUser) => {
+    try {
+        const sessionState = {
+            timestamp: new Date().toISOString(),
+            followCount,
+            lastFollowedUser,
+            browserInfo: {
+                userAgent: await page.evaluate(() => navigator.userAgent),
+                platform: await page.evaluate(() => navigator.platform),
+                language: await page.evaluate(() => navigator.language)
+            }
+        };
+        fs.writeFileSync('session-state.json', JSON.stringify(sessionState, null, 2));
+        log.debug('Session state saved successfully');
+    } catch (error) {
+        log.error('Failed to save session state:', error.message);
+    }
 };
 
 (async () => {
     let browser;
     let page;
     let followCount = 0;
+    let lastFollowedUser = null;
+    let sessionStartTime = new Date();
 
     try {
-        log.info('Starting Instagram automation...');
-        log.info(`Will follow maximum ${MAX_FOLLOWS} people...`);
+        log.info('🚀 Starting Instagram automation...');
+        log.info(`🎯 Target: Follow maximum ${MAX_FOLLOWS} people`);
+        log.info(`⏱️ Session started at: ${sessionStartTime.toISOString()}`);
 
         // Connect to MongoDB
         await client.connect();
         const database = client.db('instagram_bot');
         const followersCollection = database.collection('followers');
+        log.success('📦 Connected to MongoDB successfully');
 
         // Get today's date in YYYY-MM-DD format
         const today = new Date().toISOString().split('T')[0];
 
-        // Launch browser and get initial counts first
-        log.info('Launching browser...');
+        // Launch browser with enhanced anti-detection measures
+        log.browser('Launching browser with stealth mode...');
         const isCI = process.env.CI === 'true';
         log.debug('Environment:', {
             isCI,
-            chromePath: process.env.CHROME_PATH
+            chromePath: process.env.CHROME_PATH,
+            proxy: process.env.PROXY ? 'Configured' : 'Not configured'
         });
 
         browser = await puppeteer.launch({
@@ -69,144 +109,146 @@ const randomDelay = async (min, max) => {
                 '--window-size=1920,1080',
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-blink-features=AutomationControlled'
+                '--disable-blink-features=AutomationControlled',
+                ...(process.env.PROXY ? [`--proxy-server=${process.env.PROXY}`] : []),
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials'
             ],
             executablePath: isCI ? process.env.CHROME_PATH : undefined,
             ignoreHTTPSErrors: true
         });
 
-        log.success('Browser launched successfully');
+        log.success('🌐 Browser launched successfully');
         page = await browser.newPage();
 
-        // Add additional headers
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"'
+        // Generate and set a new User-Agent dynamically
+        const newUserAgent = new userAgent();
+        await page.setUserAgent(newUserAgent.toString());
+        log.browser(`🌍 Using User-Agent: ${newUserAgent.toString()}`);
+
+        // Enhanced anti-detection measures
+        await page.evaluateOnNewDocument(() => {
+            // Overwrite the `navigator.webdriver` property
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false
+            });
+
+            // Overwrite the `navigator.plugins` property
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [
+                    {
+                        0: {
+                            type: "application/x-google-chrome-pdf",
+                            suffixes: "pdf",
+                            description: "Portable Document Format",
+                            enabledPlugin: true
+                        },
+                        description: "Portable Document Format",
+                        filename: "internal-pdf-viewer",
+                        length: 1,
+                        name: "Chrome PDF Plugin"
+                    }
+                ]
+            });
+
+            // Add language preferences
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+
+            // Modify the permissions API
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+
+            // Add Chrome runtime
+            window.chrome = {
+                runtime: {}
+            };
         });
 
-        // Set user agent
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+        // Load cookies if available
+        if (fs.existsSync(COOKIE_PATH)) {
+            try {
+                const cookies = JSON.parse(fs.readFileSync(COOKIE_PATH));
+                await page.setCookie(...cookies);
+                log.security('✅ Cookies loaded successfully!');
+                log.debug(`Loaded ${cookies.length} cookies`);
+            } catch (error) {
+                log.warning('Failed to load cookies:', error.message);
+            }
+        }
+
+        // Navigate to Instagram
+        log.info('🌐 Navigating to Instagram...');
+        await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
+
+        // Check if login is required
+        let loginRequired = false;
+        try {
+            await page.waitForSelector('input[name="username"]', { timeout: 5000 });
+            loginRequired = true;
+        } catch (err) {
+            log.success('✅ Already logged in!');
+        }
+
+        if (loginRequired) {
+            log.security('🔒 Logging in...');
+            await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+
+            // Enter credentials with realistic typing delay
+            await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
+            await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
+            await page.click('button[type="submit"]');
+
+            // Wait for login process
+            await page.waitForNavigation({ waitUntil: 'networkidle2' });
+
+            // Save cookies after successful login
+            const cookies = await page.cookies();
+            fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies));
+            log.security('✅ Login successful! Cookies saved.');
+            log.debug(`Saved ${cookies.length} cookies`);
+        }
+
+        // Check for expired cookies
+        const cookies = await page.cookies();
+        const expiredCookies = cookies.filter(cookie => cookie.expires && cookie.expires < Date.now() / 1000);
+        if (expiredCookies.length > 0) {
+            log.warning(`⚠️ Found ${expiredCookies.length} expired cookies! Re-logging in...`);
+            fs.unlinkSync(COOKIE_PATH); // Delete expired cookies
+            // Re-run login process
+            await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+            await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
+            await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
+            await page.click('button[type="submit"]');
+            await page.waitForNavigation({ waitUntil: 'networkidle2' });
+            const newCookies = await page.cookies();
+            fs.writeFileSync(COOKIE_PATH, JSON.stringify(newCookies));
+            log.security('✅ Re-login successful! New cookies saved.');
+        }
+
+        // Save initial session state
+        await saveSessionState(followCount, lastFollowedUser);
+
+        // Random mouse movements
+        async function performRandomMouseMovements() {
+            const width = 1920;
+            const height = 1080;
+            for (let i = 0; i < 3; i++) {
+                const x = Math.floor(Math.random() * width);
+                const y = Math.floor(Math.random() * height);
+                await page.mouse.move(x, y);
+                await randomDelay(500, 1000);
+            }
+        }
 
         // Set a longer default timeout
         page.setDefaultTimeout(60000);
-
-        // Add error handling for navigation
-        try {
-            log.info('Navigating to Instagram login page...');
-            const response = await page.goto('https://www.instagram.com/', {
-                waitUntil: ['networkidle0', 'domcontentloaded'],
-                timeout: 60000
-            });
-
-            if (!response.ok()) {
-                throw new Error(`Failed to load Instagram: ${response.status()} ${response.statusText()}`);
-            }
-
-            log.info('Instagram page loaded successfully');
-        } catch (error) {
-            log.error('Navigation error:', error);
-            await page.screenshot({ path: 'navigation-error.png', fullPage: true });
-            throw error;
-        }
-
-        // Enhanced login process with reCAPTCHA detection
-        try {
-            log.info('Attempting to login...');
-            await page.waitForSelector('input[name="username"]', { visible: true });
-            await randomDelay(1000, 2000);
-
-            // Type credentials with human-like delays
-            for (const char of process.env.INSTAGRAM_USERNAME) {
-                await page.type('input[name="username"]', char);
-                await randomDelay(50, 150);
-            }
-
-            await randomDelay(500, 1000);
-
-            for (const char of process.env.INSTAGRAM_PASSWORD) {
-                await page.type('input[name="password"]', char);
-                await randomDelay(50, 150);
-            }
-
-            await randomDelay(500, 1000);
-
-            // Check for reCAPTCHA before clicking login
-            const recaptchaFrame = await page.$('iframe[src*="recaptcha"]');
-            if (recaptchaFrame) {
-                log.warning('reCAPTCHA detected before login!');
-                await page.screenshot({ path: 'recaptcha-challenge.png', fullPage: true });
-                throw new Error('Instagram is showing reCAPTCHA challenge. Please complete it manually and try again later.');
-            }
-
-            await page.click('button[type="submit"]');
-
-            // Wait for any of these possible outcomes after login attempt
-            const loginResult = await Promise.race([
-                page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 60000 })
-                    .then(() => ({ status: 'success', element: 'home' })),
-                page.waitForSelector('input[name="verificationCode"]', { visible: true, timeout: 60000 })
-                    .then(() => ({ status: 'verification', element: 'verification' })),
-                page.waitForSelector('p[data-testid="login-error-message"]', { visible: true, timeout: 60000 })
-                    .then(() => ({ status: 'error', element: 'error' })),
-                page.waitForSelector('iframe[src*="recaptcha"]', { visible: true, timeout: 60000 })
-                    .then(() => ({ status: 'recaptcha', element: 'recaptcha' })),
-                page.waitForSelector('div[role="dialog"]', { visible: true, timeout: 60000 })
-                    .then(() => ({ status: 'dialog', element: 'dialog' }))
-            ]).catch(error => ({ status: 'error', error }));
-
-            // Take screenshot for debugging
-            await page.screenshot({ path: 'login-state.png', fullPage: true });
-
-            switch (loginResult.status) {
-                case 'success':
-                    log.success('Successfully logged in!');
-                    break;
-
-                case 'recaptcha':
-                    log.warning('reCAPTCHA challenge detected after login attempt');
-                    await page.screenshot({ path: 'recaptcha-after-login.png', fullPage: true });
-                    throw new Error('Instagram requires reCAPTCHA verification. Please try again later or complete it manually.');
-
-                case 'verification':
-                    log.warning('Instagram requires verification code');
-                    await page.screenshot({ path: 'verification-needed.png', fullPage: true });
-                    throw new Error('Verification code required');
-
-                case 'dialog':
-                    const dialogText = await page.evaluate(() => {
-                        const dialog = document.querySelector('div[role="dialog"]');
-                        return dialog ? dialog.textContent : '';
-                    });
-                    log.warning(`Login dialog detected: ${dialogText}`);
-                    await page.screenshot({ path: 'login-dialog.png', fullPage: true });
-                    throw new Error(`Login dialog appeared: ${dialogText}`);
-
-                case 'error':
-                    const errorText = await page.evaluate(() => {
-                        const error = document.querySelector('p[data-testid="login-error-message"]');
-                        return error ? error.textContent : '';
-                    });
-                    log.error(`Login error: ${errorText || loginResult.error?.message || 'Unknown error'}`);
-                    await page.screenshot({ path: 'login-error.png', fullPage: true });
-                    throw new Error(`Login failed: ${errorText || loginResult.error?.message || 'Unknown error'}`);
-
-                default:
-                    log.error('Unexpected login outcome');
-                    await page.screenshot({ path: 'unexpected-state.png', fullPage: true });
-                    throw new Error('Unexpected login outcome');
-            }
-
-        } catch (loginError) {
-            log.error('Login process error:', loginError.message);
-            // Capture page content for debugging
-            const pageContent = await page.content();
-            log.debug('Page content at error:', pageContent.substring(0, 500) + '...');
-            await page.screenshot({ path: 'login-error.png', fullPage: true });
-            throw loginError;
-        }
 
         // Additional verification after successful login
         try {
@@ -697,17 +739,17 @@ const randomDelay = async (min, max) => {
         log.info(`Total following: ${finalStats.totalFollowing}`);
 
         await browser.close();
-        log.info('Browser closed. Script finished.');
+        log.info('🌐 Browser closed. Script finished.');
     } catch (error) {
-        log.error('An error occurred:', error.message);
+        log.error('❌ An error occurred:', error.message);
         log.error('Stack trace:', error.stack);
-        log.info(`Managed to follow ${followCount} people before the error occurred.`);
+        log.info(`📊 Managed to follow ${followCount} people before the error occurred.`);
 
         // Take a screenshot if there's an error
         if (page) {
             try {
                 await page.screenshot({ path: 'error-screenshot.png', fullPage: true });
-                log.info('Error screenshot saved as error-screenshot.png');
+                log.info('📸 Error screenshot saved as error-screenshot.png');
             } catch (screenshotError) {
                 log.error('Failed to take error screenshot:', screenshotError.message);
             }
@@ -716,13 +758,26 @@ const randomDelay = async (min, max) => {
         if (browser) {
             try {
                 await browser.close();
-                log.info('Browser closed after error.');
+                log.info('🌐 Browser closed after error.');
             } catch (e) {
                 log.error('Failed to close browser:', e.message);
             }
         }
         process.exit(1);
     } finally {
+        // Save final session state
+        await saveSessionState(followCount, lastFollowedUser);
+
+        // Calculate session duration
+        const sessionEndTime = new Date();
+        const sessionDuration = (sessionEndTime - sessionStartTime) / 1000 / 60; // in minutes
+
+        log.info(`⏱️ Session ended at: ${sessionEndTime.toISOString()}`);
+        log.info(`⏱️ Total session duration: ${Math.round(sessionDuration)} minutes`);
+        log.info(`📊 Total follows in this session: ${followCount}`);
+        log.info(`📈 Average follows per minute: ${(followCount / sessionDuration).toFixed(2)}`);
+
         await client.close(); // Ensure MongoDB connection is closed
+        log.info('📦 MongoDB connection closed');
     }
 })();
