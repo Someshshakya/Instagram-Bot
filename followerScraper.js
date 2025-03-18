@@ -523,76 +523,96 @@ async function handleRateLimit(page) {
 
 async function updateFollowCount(database, count) {
     try {
-        const followersCollection = database.collection('followers');
+        const followersCollection = database.getCollection('followers');
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        // Get current stats from followers collection
-        const currentStats = await followersCollection.findOne({ _id: 'followers_stats' }) || {};
-        const lastResetDate = currentStats.lastResetDate ? new Date(currentStats.lastResetDate) : null;
+        // Create a unique ID for today's document
+        const todayId = today.toISOString().split('T')[0];
 
-        // STRICT CHECK: If we're at or above 150, stop immediately
-        if (currentStats.followsToday >= DAILY_LIMIT) {
-            log.warning(`🛑 CRITICAL: Daily follow limit of ${DAILY_LIMIT} reached or exceeded. Stopping immediately.`);
+        // Get today's follow stats
+        const todayStats = await followersCollection.findOne({ date: todayId });
+
+        if (!todayStats) {
+            // Create a new document for today
+            await followersCollection.insertOne({
+                date: todayId,
+                followsCount: 1,
+                lastUpdated: new Date(),
+                startTime: new Date(),
+                status: 'active',
+                details: {
+                    targetFollows: MAX_FOLLOWS,
+                    dailyLimit: DAILY_LIMIT
+                },
+                history: [{
+                    time: new Date(),
+                    action: 'started',
+                    followsCount: 1
+                }]
+            });
+            log.stats(`Created new follow record for ${todayId}. First follow recorded.`);
+            return;
+        }
+
+        // Check if we've hit the daily limit
+        if (todayStats.followsCount >= DAILY_LIMIT) {
+            await followersCollection.updateOne(
+                { date: todayId },
+                {
+                    $set: {
+                        status: 'completed',
+                        lastUpdated: new Date()
+                    },
+                    $push: {
+                        history: {
+                            time: new Date(),
+                            action: 'limit_reached',
+                            followsCount: todayStats.followsCount
+                        }
+                    }
+                }
+            );
+            log.warning(`🛑 Daily limit reached for ${todayId}. Total follows: ${todayStats.followsCount}`);
             throw new Error('DAILY_LIMIT_REACHED');
         }
 
-        // Reset followsToday if it's a new day
-        if (!lastResetDate || lastResetDate < today) {
-            await followersCollection.updateOne(
-                { _id: 'followers_stats' },
-                {
-                    $set: {
-                        lastUpdated: new Date(),
-                        totalFollows: (currentStats.totalFollows || 0) + 1,
-                        followsToday: 1,
-                        lastResetDate: today,
-                        todayDate: today
-                    }
+        // Update today's document
+        const newFollowCount = (todayStats.followsCount || 0) + 1;
+        await followersCollection.updateOne(
+            { date: todayId },
+            {
+                $set: {
+                    followsCount: newFollowCount,
+                    lastUpdated: new Date(),
+                    status: newFollowCount >= DAILY_LIMIT ? 'completed' : 'active'
                 },
-                { upsert: true }
-            );
-            log.stats(`Reset daily counter. New follows today: 1, Total follows: ${(currentStats.totalFollows || 0) + 1}`);
-        } else {
-            // STRICT CHECK: Prevent update if it would exceed the limit
-            const newFollowsToday = (currentStats.followsToday || 0) + 1;
-            if (newFollowsToday > DAILY_LIMIT) {
-                log.warning(`🛑 CRITICAL: Cannot proceed - would exceed daily limit of ${DAILY_LIMIT}`);
-                throw new Error('DAILY_LIMIT_REACHED');
-            }
-
-            // Update existing stats
-            await followersCollection.updateOne(
-                { _id: 'followers_stats' },
-                {
-                    $set: {
-                        lastUpdated: new Date(),
-                        totalFollows: (currentStats.totalFollows || 0) + 1,
-                        followsToday: newFollowsToday,
-                        todayDate: today
+                $push: {
+                    history: {
+                        time: new Date(),
+                        action: 'follow',
+                        followsCount: newFollowCount
                     }
-                },
-                { upsert: true }
-            );
-            log.stats(`Updated follow count - Total: ${(currentStats.totalFollows || 0) + 1}, Today: ${newFollowsToday}`);
-
-            // Warning when approaching limit
-            if (newFollowsToday >= DAILY_LIMIT - 10) {
-                log.warning(`⚠️ CAUTION: Approaching daily limit! (${newFollowsToday}/${DAILY_LIMIT})`);
+                }
             }
+        );
 
-            // Stop if we've hit the limit
-            if (newFollowsToday >= DAILY_LIMIT) {
-                log.warning(`🛑 Daily limit of ${DAILY_LIMIT} reached. Stopping immediately.`);
-                throw new Error('DAILY_LIMIT_REACHED');
-            }
+        // Log progress
+        log.stats(`Updated follow count for ${todayId}:`);
+        log.stats(`• Current follows: ${newFollowCount}/${DAILY_LIMIT}`);
+        log.stats(`• Status: ${newFollowCount >= DAILY_LIMIT ? 'Completed' : 'Active'}`);
+
+        // Add warning when approaching limit
+        if (newFollowCount >= DAILY_LIMIT - 10) {
+            log.warning(`⚠️ Approaching daily limit! (${newFollowCount}/${DAILY_LIMIT})`);
         }
+
     } catch (error) {
         if (error.message === 'DAILY_LIMIT_REACHED') {
-            throw error; // Re-throw this specific error to handle it in the main function
+            throw error;
         }
         log.error('Error updating follow count:', error.message);
-        throw error; // Re-throw other errors to ensure we stop on any database issues
+        throw error;
     }
 }
 
@@ -669,42 +689,89 @@ async function performLogin(page) {
     }
 }
 
+async function checkDailyFollowStats() {
+    try {
+        const database = client.db('instagram_bot');
+        const followersCollection = database.getCollection('followers');
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayId = today.toISOString().split('T')[0];
+
+        // Get today's stats
+        const todayStats = await followersCollection.findOne({ date: todayId });
+
+        if (!todayStats) {
+            log.info('No follow activity recorded for today. Starting fresh.');
+            return {
+                followsToday: 0,
+                canContinue: true
+            };
+        }
+
+        // Get total follows (across all days)
+        const totalFollows = await followersCollection.aggregate([
+            { $group: { _id: null, total: { $sum: "$followsCount" } } }
+        ]).toArray();
+
+        const followsToday = todayStats.followsCount || 0;
+        log.info(`📊 Follow Statistics for ${todayId}:`);
+        log.info(`   • Follows today: ${followsToday}/${DAILY_LIMIT}`);
+        log.info(`   • Total follows all time: ${totalFollows[0]?.total || 0}`);
+        log.info(`   • Status: ${todayStats.status}`);
+        log.info(`   • Last updated: ${new Date(todayStats.lastUpdated).toLocaleString()}`);
+
+        if (followsToday >= DAILY_LIMIT) {
+            log.warning(`🛑 Daily limit of ${DAILY_LIMIT} already reached for ${todayId}`);
+            return {
+                followsToday,
+                canContinue: false
+            };
+        }
+
+        return {
+            followsToday,
+            canContinue: true
+        };
+    } catch (error) {
+        log.error('Error checking daily follow stats:', error.message);
+        throw error;
+    }
+}
+
 async function main() {
     let browser;
     let page;
-    let followCount = 0;
     let sessionStartTime = new Date();
 
     try {
         log.info('🚀 Starting Instagram automation...');
-        log.info(`🎯 Target: Follow maximum ${MAX_FOLLOWS} people (Hard limit: ${DAILY_LIMIT})`);
-        log.info(`⚠️ Script will stop immediately if ${DAILY_LIMIT} follows is reached`);
         log.info(`⏱️ Session started at: ${sessionStartTime.toISOString()}`);
 
-        // Connect to MongoDB and check daily limits
+        // Connect to MongoDB first
         try {
             await client.connect();
             log.success('📦 Connected to MongoDB successfully');
 
+            // Check current follow stats before proceeding
             const database = client.db('instagram_bot');
-            const followersCollection = database.collection('followers');
-
-            // Check if we've already hit the daily limit
+            const followersCollection = database.getCollection('followers');
             const stats = await followersCollection.findOne({ _id: 'followers_stats' });
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
 
-            if (stats && stats.lastResetDate && new Date(stats.lastResetDate).getTime() === today.getTime()) {
-                // STRICT CHECK: If we're at or near limit, stop immediately
+            if (stats) {
+                log.info(`📊 Current follow stats:`);
+                log.info(`   • Follows today: ${stats.followsToday || 0}/${DAILY_LIMIT}`);
+                log.info(`   • Total follows: ${stats.totalFollows || 0}`);
+
                 if (stats.followsToday >= DAILY_LIMIT) {
-                    log.warning(`🛑 CRITICAL: Daily limit of ${DAILY_LIMIT} already reached. Cannot proceed today.`);
+                    log.warning(`🛑 Daily limit of ${DAILY_LIMIT} already reached. Cannot continue today.`);
+                    await client.close();
                     process.exit(0);
-                } else if (stats.followsToday >= DAILY_LIMIT - 10) {
-                    log.warning(`⚠️ CAUTION: Very close to daily limit! (${stats.followsToday}/${DAILY_LIMIT})`);
                 }
-                followCount = stats.followsToday;
-                log.info(`📊 Current follows today: ${followCount}/${DAILY_LIMIT}`);
             }
+
+            log.info(`🎯 Target: Follow maximum ${MAX_FOLLOWS} people (Hard limit: ${DAILY_LIMIT})`);
+            log.info(`⚠️ Script will stop immediately if ${DAILY_LIMIT} follows is reached`);
+
         } catch (mongoError) {
             log.error('MongoDB Connection Error:', {
                 message: mongoError.message,
@@ -714,62 +781,32 @@ async function main() {
             throw new Error(`Failed to connect to MongoDB: ${mongoError.message}`);
         }
 
-        // Check if running in GitHub Actions
-        const isGitHubActions = process.env.GITHUB_ACTIONS === 'true';
-        log.info(`Running in ${isGitHubActions ? 'GitHub Actions' : 'local'} environment`);
+        // Launch browser with custom window size
+        browser = await puppeteer.launch({
+            headless: isGitHubAction ? true : false,
+            args: [
+                '--window-size=1920,1080',
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ],
+            defaultViewport: {
+                width: 1920,
+                height: 1080
+            },
+            executablePath: process.env.CHROME_PATH || undefined
+        });
 
-        // Launch browser with basic configuration
-        log.browser('Launching browser...');
+        // Create new page and set viewport
+        page = await browser.newPage();
+        await page.setViewport({ width: 1920, height: 1080 });
 
-        try {
-            const launchOptions = {
-                headless: isGitHubActions,
-                executablePath: process.env.CHROME_PATH || undefined,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--window-size=1280,720'
-                ]
-            };
+        // Set up request interception for performance
+        await setupRequestInterception(page);
 
-            log.info('Browser launch options configured, attempting to launch...');
-            browser = await puppeteer.launch(launchOptions);
-            log.success('🌐 Browser launched successfully');
-
-            // Create a new page
-            page = await browser.newPage();
-
-            // Set a custom user agent
-            const userAgentString = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-            await page.setUserAgent(userAgentString);
-            log.browser(`🌍 Using User-Agent: ${userAgentString}`);
-
-            // Set viewport
-            await page.setViewport({
-                width: 1280,
-                height: 720,
-                deviceScaleFactor: 1
-            });
-
-            // Basic anti-detection
-            await page.evaluateOnNewDocument(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                window.navigator.chrome = { runtime: {} };
-            });
-
-        } catch (launchError) {
-            log.error('Failed to launch browser:', launchError.message);
-            log.error('Launch error details:', {
-                errorName: launchError.name,
-                errorMessage: launchError.message,
-                errorStack: launchError.stack,
-                isGitHubActions,
-                chromePath: process.env.CHROME_PATH
-            });
-            throw launchError;
-        }
+        // Set custom user agent
+        const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+        await page.setUserAgent(userAgent);
+        log.info(`🌍 Using User-Agent: ${userAgent}`);
 
         // Navigate to Instagram and perform login
         log.info('🌐 Navigating to Instagram...');
@@ -784,7 +821,7 @@ async function main() {
             await performLogin(page);
         }
 
-        while (followCount < MAX_FOLLOWS) {
+        while (stats.followsToday < MAX_FOLLOWS) {
             // Step 1: Load followers page
             log.info('Navigating to followers page...');
             const followersLoaded = await loadSuggestionsPage(page);
@@ -799,7 +836,7 @@ async function main() {
             await followUsers(page);
 
             // If we've reached the max follows, break the loop
-            if (followCount >= MAX_FOLLOWS) break;
+            if (stats.followsToday >= MAX_FOLLOWS) break;
 
             // Refresh the page to load more followers
             log.info('Refreshing page to load more followers...');
@@ -808,8 +845,8 @@ async function main() {
         }
 
         // Final update to MongoDB
-        await updateFollowCount(database, followCount);
-        log.success(`Completed following ${followCount} users`);
+        await updateFollowCount(client.db('instagram_bot'), stats.followsToday);
+        log.success(`Completed following ${stats.followsToday} users`);
         await browser.close();
         log.info('🌐 Browser closed. Script finished.');
 
@@ -833,11 +870,35 @@ async function main() {
             await browser.close();
             log.info('🌐 Browser closed after error.');
         }
-        process.exit(1);
-    } finally {
+
         await client.close();
-        log.info('📦 MongoDB connection closed');
+        process.exit(1);
     }
 }
+
+// Add process handlers for graceful shutdown
+process.on('SIGINT', async () => {
+    log.info('Received SIGINT. Performing graceful shutdown...');
+    try {
+        await client.close();
+        log.info('MongoDB connection closed.');
+        process.exit(0);
+    } catch (error) {
+        log.error('Error during graceful shutdown:', error);
+        process.exit(1);
+    }
+});
+
+process.on('SIGTERM', async () => {
+    log.info('Received SIGTERM. Performing graceful shutdown...');
+    try {
+        await client.close();
+        log.info('MongoDB connection closed.');
+        process.exit(0);
+    } catch (error) {
+        log.error('Error during graceful shutdown:', error);
+        process.exit(1);
+    }
+});
 
 main().catch(console.error); 
