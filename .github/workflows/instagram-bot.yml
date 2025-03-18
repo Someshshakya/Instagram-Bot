@@ -7,10 +7,15 @@ on:
   push:
     branches:
       - main  # Trigger on push to main branch
+    paths-ignore:
+      - 'follow_stats.json'  # Ignore changes to follow stats file
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v3
       
@@ -30,6 +35,7 @@ jobs:
         run: node followerScraper.js
         
       - name: Commit and push changes
+        if: github.event_name != 'push'  # Only commit if not triggered by a push
         run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'actions@github.com'
@@ -38,6 +44,7 @@ jobs:
           git push origin main
           
       - name: Trigger new build
+        if: github.event_name != 'push'  # Only trigger new build if not triggered by a push
         run: |
           curl -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
