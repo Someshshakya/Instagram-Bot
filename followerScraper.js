@@ -58,39 +58,97 @@ const randomDelay = async (min, max) => {
 async function loadSuggestionsPage(page) {
     log.info('Attempting to load followers from profile...');
 
-    // Navigate to the specific profile's followers page
-    const success = await safeNavigate(page, 'https://www.instagram.com/ms.sethii/followers/');
-    if (!success) {
-        log.error('Failed to load followers page');
+    try {
+        // First navigate to the profile page
+        log.info('Navigating to profile page...');
+        await page.goto('https://www.instagram.com/ms.sethii/', {
+            waitUntil: 'networkidle0',
+            timeout: 30000
+        });
+        await randomDelay(2000, 3000);
+
+        // Click on followers count to open the dialog
+        log.info('Looking for followers link...');
+        const followersSelectors = [
+            'a[href$="/followers/"]',
+            'a[href*="/followers"]',
+            'a[href*="followers"]',
+            'a:-webkit-any(href="/followers")',
+            'a[role="link"]:has-text("followers")'
+        ];
+
+        let followersLink = null;
+        for (const selector of followersSelectors) {
+            try {
+                followersLink = await page.waitForSelector(selector, { timeout: 5000 });
+                if (followersLink) {
+                    log.info(`Found followers link with selector: ${selector}`);
+                    break;
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+
+        if (!followersLink) {
+            log.error('Could not find followers link');
+            await page.screenshot({ path: 'no-followers-link.png', fullPage: true });
+            return false;
+        }
+
+        // Click the followers link
+        await followersLink.click();
+        await randomDelay(3000, 5000);
+
+        // Wait for followers list to load with multiple selectors
+        const contentSelectors = [
+            'div[role="dialog"]',
+            'div[class*="x1lliihq"]',
+            'div[class*="x1n2onr6"]',
+            'div[class*="x1q0g3np"]',
+            'div[role="list"]',
+            'div[role="grid"]'
+        ];
+
+        let foundContent = false;
+        for (const selector of contentSelectors) {
+            try {
+                await page.waitForSelector(selector, { visible: true, timeout: 10000 });
+                log.info(`Found content using selector: ${selector}`);
+                foundContent = true;
+
+                // Take a screenshot for debugging
+                await page.screenshot({ path: 'followers-dialog.png', fullPage: true });
+
+                // Get dialog content for debugging
+                const dialogContent = await page.evaluate((sel) => {
+                    const dialog = document.querySelector(sel);
+                    return dialog ? {
+                        innerHTML: dialog.innerHTML,
+                        childCount: dialog.children.length,
+                        classes: dialog.className
+                    } : null;
+                }, selector);
+                log.debug('Dialog content:', JSON.stringify(dialogContent, null, 2));
+
+                break;
+            } catch (e) {
+                continue;
+            }
+        }
+
+        if (!foundContent) {
+            log.error('Failed to load followers list');
+            await page.screenshot({ path: 'followers-load-failed.png', fullPage: true });
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        log.error('Error loading suggestions page:', error.message);
+        await page.screenshot({ path: 'load-suggestions-error.png', fullPage: true });
         return false;
     }
-
-    // Wait for followers list to load
-    await randomDelay(3000, 5000);
-
-    // Wait for content to load with multiple selectors
-    const contentSelectors = [
-        'div[role="dialog"]',
-        'div[class*="x1lliihq"]',
-        'div[class*="x1n2onr6"]',
-        'div[class*="x1q0g3np"]',
-        'div[role="list"]',
-        'div[role="grid"]'
-    ];
-
-    for (const selector of contentSelectors) {
-        try {
-            await page.waitForSelector(selector, { visible: true, timeout: 10000 });
-            log.info(`Found content using selector: ${selector}`);
-            return true;
-        } catch (e) {
-            continue;
-        }
-    }
-
-    log.error('Failed to load followers list');
-    await page.screenshot({ path: 'followers-load-failed.png', fullPage: true });
-    return false;
 }
 
 async function scrollFollowersList(page) {
@@ -149,25 +207,42 @@ async function findFollowButtons(page) {
 
         // Updated selectors for Instagram follow buttons
         const buttonSelectors = [
-            'button._acan._acap._acas',
-            'button._acan._acap._acas._aj1-',
-            'button[type="button"]._acan._acap._acas',
+            'button._acan._acap._acas:not(._acat)',
+            'button._acan._acap._acas._aj1-:not(._acat)',
+            'button[type="button"]._acan._acap._acas:not(._acat)',
+            'button._acas:not(._acat)',
+            'button[class*="_acan"][class*="_acap"][class*="_acas"]:not(._acat)',
             'button:has-text("Follow")',
-            'button[class*="x1i10hfl"][class*="_acan"]',
-            'button[class*="x1n2onr6"][class*="_acan"]',
-            'button[class*="_acap"][class*="_acan"]'
+            'button[class*="x1i10hfl"][class*="_acan"]:not(._acat)',
+            'button[class*="x1n2onr6"][class*="_acan"]:not(._acat)',
+            'div[role="button"]:has(div:has-text("Follow"))'
         ];
 
         let followButtons = [];
+        let debugInfo = {};
 
         // Try each selector
         for (const selector of buttonSelectors) {
             try {
-                await page.waitForSelector(selector, { timeout: 5000 });
+                log.debug(`Trying selector: ${selector}`);
                 const buttons = await page.$$(selector);
+                log.debug(`Found ${buttons.length} elements with selector: ${selector}`);
 
                 for (const button of buttons) {
                     try {
+                        // Get button text and classes for debugging
+                        const buttonInfo = await button.evaluate(btn => ({
+                            text: btn.textContent.trim(),
+                            classes: btn.className,
+                            isVisible: {
+                                display: window.getComputedStyle(btn).display,
+                                visibility: window.getComputedStyle(btn).visibility,
+                                rect: btn.getBoundingClientRect()
+                            }
+                        }));
+
+                        log.debug(`Button info: ${JSON.stringify(buttonInfo)}`);
+
                         const isVisible = await button.evaluate(btn => {
                             const rect = btn.getBoundingClientRect();
                             return rect.width > 0 && rect.height > 0 &&
@@ -175,63 +250,62 @@ async function findFollowButtons(page) {
                                 window.getComputedStyle(btn).visibility !== 'hidden';
                         });
 
-                        if (!isVisible) continue;
+                        if (!isVisible) {
+                            log.debug(`Button not visible: ${buttonInfo.text}`);
+                            continue;
+                        }
 
                         const isDisabled = await button.evaluate(btn =>
                             btn.disabled ||
                             btn.getAttribute('disabled') !== null ||
-                            btn.classList.contains('_acat')  // Instagram's disabled button class
+                            btn.classList.contains('_acat')
                         );
 
-                        if (isDisabled) continue;
-
-                        const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
-                        if (buttonText === 'follow') {
-                            followButtons.push(button);
+                        if (isDisabled) {
+                            log.debug(`Button disabled: ${buttonInfo.text}`);
+                            continue;
                         }
+
+                        const buttonText = buttonInfo.text.toLowerCase();
+                        if (buttonText === 'follow') {
+                            log.debug(`Valid follow button found: ${buttonInfo.text}`);
+                            followButtons.push(button);
+                        } else {
+                            log.debug(`Button text not 'follow': ${buttonInfo.text}`);
+                        }
+
+                        // Store debug info
+                        debugInfo[selector] = debugInfo[selector] || [];
+                        debugInfo[selector].push(buttonInfo);
+
                     } catch (error) {
+                        log.debug(`Error processing button: ${error.message}`);
                         continue;
                     }
                 }
 
                 if (followButtons.length > 0) {
-                    break; // Exit if we found valid buttons
+                    log.info(`Found ${followButtons.length} valid follow buttons with selector: ${selector}`);
+                    break;
                 }
             } catch (error) {
-                continue; // Try next selector if current one fails
+                log.debug(`Error with selector ${selector}: ${error.message}`);
+                continue;
             }
         }
 
-        // If no buttons found, try scrolling and searching again
+        // If no buttons found, take a screenshot and log debug info
         if (followButtons.length === 0) {
-            log.info('No follow buttons found, scrolling to load more...');
-            await scrollFollowersList(page);
-            await randomDelay(2000, 3000);
+            log.info('No follow buttons found, saving debug information...');
+            await page.screenshot({ path: 'no-buttons-found.png', fullPage: true });
+            log.debug('Debug info for all buttons:', JSON.stringify(debugInfo, null, 2));
 
-            // Try one more time after scrolling
-            for (const selector of buttonSelectors) {
-                try {
-                    const buttons = await page.$$(selector);
-                    for (const button of buttons) {
-                        try {
-                            const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
-                            const isDisabled = await button.evaluate(btn =>
-                                btn.disabled ||
-                                btn.getAttribute('disabled') !== null ||
-                                btn.classList.contains('_acat')
-                            );
-
-                            if (!isDisabled && buttonText === 'follow') {
-                                followButtons.push(button);
-                            }
-                        } catch (error) {
-                            continue;
-                        }
-                    }
-                } catch (error) {
-                    continue;
-                }
-            }
+            // Get page content for debugging
+            const content = await page.evaluate(() => {
+                const dialog = document.querySelector('div[role="dialog"]') || document.querySelector('div[class*="x1n2onr6"]');
+                return dialog ? dialog.innerHTML : 'No dialog found';
+            });
+            log.debug('Dialog content:', content);
         }
 
         log.info(`Found ${followButtons.length} follow buttons`);
