@@ -419,6 +419,79 @@ async function updateFollowCount(database, count) {
     }
 }
 
+async function performLogin(page) {
+    try {
+        log.security('🔒 Starting login process...');
+
+        // Wait for login form
+        await page.waitForSelector('input[name="username"]', { visible: true, timeout: 10000 });
+        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 10000 });
+
+        // Clear any existing input
+        await page.evaluate(() => {
+            document.querySelector('input[name="username"]').value = '';
+            document.querySelector('input[name="password"]').value = '';
+        });
+
+        // Type credentials with human-like delays
+        for (const char of process.env.INSTAGRAM_USERNAME) {
+            await page.type('input[name="username"]', char, { delay: Math.random() * 100 + 50 });
+        }
+        await randomDelay(500, 1000);
+
+        for (const char of process.env.INSTAGRAM_PASSWORD) {
+            await page.type('input[name="password"]', char, { delay: Math.random() * 100 + 50 });
+        }
+        await randomDelay(500, 1000);
+
+        // Click login button
+        const loginButton = await page.waitForSelector('button[type="submit"]', { visible: true, timeout: 5000 });
+        await loginButton.click();
+
+        // Wait for navigation and check for various post-login scenarios
+        await Promise.race([
+            page.waitForSelector('svg[aria-label="Home"]', { visible: true, timeout: 10000 }),
+            page.waitForSelector('input[name="verificationCode"]', { visible: true, timeout: 10000 }),
+            page.waitForSelector('button:has-text("Not Now")', { visible: true, timeout: 10000 })
+        ]);
+
+        // Check for security checkpoint
+        const securityCheck = await page.$('input[name="verificationCode"]');
+        if (securityCheck) {
+            throw new Error('Security checkpoint detected! Please check your email/phone for verification code.');
+        }
+
+        // Handle "Save Login Info" popup
+        try {
+            const notNowButton = await page.waitForSelector('button:has-text("Not Now")', { timeout: 5000 });
+            if (notNowButton) {
+                await notNowButton.click();
+                await randomDelay(1000, 2000);
+            }
+        } catch (e) { }
+
+        // Handle notifications popup
+        try {
+            const notNowButton = await page.waitForSelector('button:has-text("Not Now")', { timeout: 5000 });
+            if (notNowButton) {
+                await notNowButton.click();
+                await randomDelay(1000, 2000);
+            }
+        } catch (e) { }
+
+        // Save cookies after successful login
+        const cookies = await page.cookies();
+        fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies));
+        log.success('🍪 Cookies saved successfully');
+
+        return true;
+    } catch (error) {
+        log.error('Login failed:', error.message);
+        await page.screenshot({ path: 'error-screenshot.png', fullPage: true });
+        throw error;
+    }
+}
+
 async function main() {
     let browser;
     let page;
@@ -447,12 +520,8 @@ async function main() {
 
         // Launch browser with enhanced anti-detection measures
         log.browser('Launching browser with stealth mode...');
-
-        // Check if running in GitHub Actions
-        const isGitHubActions = process.env.GITHUB_ACTIONS === 'true';
-
         browser = await puppeteer.launch({
-            headless: isGitHubActions ? 'new' : false, // Use new headless mode in GitHub Actions
+            headless: false,
             defaultViewport: {
                 width: 375,
                 height: 812
@@ -467,50 +536,7 @@ async function main() {
                 '--window-size=375,812',
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-extensions',
-                '--disable-software-rasterizer',
-                '--disable-dev-shm-usage',
-                '--disable-setuid-sandbox',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--ignore-certificate-errors',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-notifications',
-                '--disable-default-apps',
-                '--disable-popup-blocking',
-                '--disable-save-password-bubble',
-                '--disable-translate',
-                '--disable-sync',
-                '--disable-background-networking',
-                '--metrics-recording-only',
-                '--disable-default-apps',
-                '--disable-popup-blocking',
-                '--disable-save-password-bubble',
-                '--disable-translate',
-                '--disable-sync',
-                '--disable-background-networking',
-                '--metrics-recording-only',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-breakpad',
-                '--disable-component-extensions-with-background-pages',
-                '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-                '--disable-ipc-flooding-protection',
-                '--enable-features=NetworkService,NetworkServiceInProcess',
-                '--force-color-profile=srgb',
-                '--metrics-recording-only',
-                '--no-default-browser-check',
-                '--no-experiments',
-                '--no-pings',
-                '--no-zygote',
-                '--password-store=basic',
-                '--use-mock-keychain',
-                '--use-gl=swiftshader',
-                '--window-size=375,812'
+                '--disable-blink-features=AutomationControlled'
             ]
         });
 
@@ -531,33 +557,17 @@ async function main() {
             hasTouch: true
         });
 
+        // Navigate to Instagram and perform login
+        log.info('🌐 Navigating to Instagram...');
+        await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+        await randomDelay(2000, 4000);
+
         // Try to load cookies first
         const cookiesLoaded = await loadCookies(page);
 
-        // Navigate to Instagram
-        log.info('🌐 Navigating to Instagram...');
-        await page.goto(INSTAGRAM_URL, { waitUntil: 'networkidle2' });
-        await randomDelay(2000, 4000);
-
         // Only perform login if cookies weren't loaded successfully
         if (!cookiesLoaded) {
-            // Navigate to login page
-            await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
-            await randomDelay(2000, 4000);
-
-            // Perform login
-            log.security('🔒 Starting login process...');
-            await page.type('input[name="username"]', process.env.INSTAGRAM_USERNAME, { delay: 120 });
-            await randomDelay(500, 1000);
-            await page.type('input[name="password"]', process.env.INSTAGRAM_PASSWORD, { delay: 120 });
-            await randomDelay(500, 1000);
-            await page.click('button[type="submit"]');
-            await randomDelay(3000, 5000);
-
-            // Save cookies after successful login
-            const cookies = await page.cookies();
-            fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies));
-            log.success('🍪 Cookies saved successfully');
+            await performLogin(page);
         }
 
         while (followCount < MAX_FOLLOWS) {
