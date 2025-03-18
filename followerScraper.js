@@ -137,28 +137,78 @@ async function findFollowButtons(page) {
     try {
         log.info('Looking for follow buttons...');
 
-        // Wait for buttons to be present
-        await page.waitForSelector('button[type="button"]', { timeout: 10000 });
+        // Wait for the dialog to be present
+        await page.waitForSelector('div[role="dialog"]', { timeout: 10000 });
 
-        // Get all buttons
-        const buttons = await page.$$('button[type="button"]');
-        const followButtons = [];
+        // Try multiple selectors for follow buttons
+        const buttonSelectors = [
+            'button:has-text("Follow")',
+            'button[class*="x1i10hfl"]',
+            'button[class*="x1n2onr6"]',
+            'button[class*="x1q0g3np"]',
+            'button[class*="x1lliihq"]',
+            'button[class*="_acan"]',
+            'button[class*="_acap"]',
+            'button[class*="_acas"]',
+            'button[class*="_aj1-"]'
+        ];
 
-        // Check each button
-        for (const button of buttons) {
+        let followButtons = [];
+
+        // Try each selector
+        for (const selector of buttonSelectors) {
             try {
-                const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
-                const buttonHTML = await button.evaluate(btn => btn.outerHTML);
+                const buttons = await page.$$(selector);
+                for (const button of buttons) {
+                    try {
+                        const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
+                        const buttonHTML = await button.evaluate(btn => btn.outerHTML);
 
-                // Check if it's a follow button
-                if (buttonText.includes('follow') &&
-                    !buttonText.includes('following') &&
-                    !buttonText.includes('unfollow') &&
-                    !buttonHTML.includes('disabled')) {
-                    followButtons.push(button);
+                        // Check if it's a valid follow button
+                        if (buttonText.includes('follow') &&
+                            !buttonText.includes('following') &&
+                            !buttonText.includes('unfollow') &&
+                            !buttonHTML.includes('disabled')) {
+                            followButtons.push(button);
+                        }
+                    } catch (error) {
+                        continue;
+                    }
                 }
             } catch (error) {
                 continue;
+            }
+        }
+
+        // If no buttons found, try scrolling to load more
+        if (followButtons.length === 0) {
+            log.info('No buttons found, scrolling to load more...');
+            await page.evaluate(() => {
+                const dialog = document.querySelector('div[role="dialog"]');
+                if (dialog) {
+                    dialog.scrollTop = dialog.scrollHeight;
+                }
+            });
+            await randomDelay(2000, 3000);
+
+            // Try finding buttons again after scrolling
+            for (const selector of buttonSelectors) {
+                const buttons = await page.$$(selector);
+                for (const button of buttons) {
+                    try {
+                        const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
+                        const buttonHTML = await button.evaluate(btn => btn.outerHTML);
+
+                        if (buttonText.includes('follow') &&
+                            !buttonText.includes('following') &&
+                            !buttonText.includes('unfollow') &&
+                            !buttonHTML.includes('disabled')) {
+                            followButtons.push(button);
+                        }
+                    } catch (error) {
+                        continue;
+                    }
+                }
             }
         }
 
@@ -206,17 +256,29 @@ async function followUsers(page, targetProfile) {
     try {
         let followsToday = 0;
         const maxFollows = 100;
+        let noButtonsCount = 0;
+        const maxNoButtonsAttempts = 3;
 
         while (followsToday < maxFollows) {
             try {
                 // Find and click follow buttons
                 const followButtons = await findFollowButtons(page);
                 if (followButtons.length === 0) {
-                    log.warning('No more follow buttons found, refreshing page...');
-                    await page.reload();
-                    await randomDelay(2, 5);
+                    noButtonsCount++;
+                    if (noButtonsCount >= maxNoButtonsAttempts) {
+                        log.warning('No follow buttons found after multiple attempts, refreshing page...');
+                        await page.reload();
+                        await randomDelay(5000, 8000);
+                        noButtonsCount = 0;
+                        continue;
+                    }
+                    log.warning('No follow buttons found, waiting before retry...');
+                    await randomDelay(3000, 5000);
                     continue;
                 }
+
+                // Reset no buttons counter if we found buttons
+                noButtonsCount = 0;
 
                 // Follow users
                 for (const button of followButtons) {
@@ -229,7 +291,7 @@ async function followUsers(page, targetProfile) {
                         log.success(`Successfully followed user ${followsToday}/${maxFollows}`);
 
                         // Add random delay between follows
-                        await randomDelay(2, 10);
+                        await randomDelay(2000, 5000);
                     } catch (error) {
                         log.warning(`Skipping user: ${error.message}`);
                         continue;
@@ -239,14 +301,17 @@ async function followUsers(page, targetProfile) {
                 // Scroll to load more
                 log.info('Scrolling to load more followers...');
                 await page.evaluate(() => {
-                    window.scrollTo(0, document.body.scrollHeight);
+                    const dialog = document.querySelector('div[role="dialog"]');
+                    if (dialog) {
+                        dialog.scrollTop = dialog.scrollHeight;
+                    }
                 });
-                await randomDelay(2, 5);
+                await randomDelay(2000, 3000);
 
             } catch (error) {
                 log.warning(`Error during follow cycle: ${error.message}`);
                 await page.reload();
-                await randomDelay(2, 5);
+                await randomDelay(5000, 8000);
                 continue;
             }
         }
