@@ -328,8 +328,12 @@ async function main() {
 
         // Launch browser with enhanced anti-detection measures
         log.browser('Launching browser with stealth mode...');
+
+        // Check if running in GitHub Actions
+        const isGitHubActions = process.env.GITHUB_ACTIONS === 'true';
+
         browser = await puppeteer.launch({
-            headless: false,
+            headless: isGitHubActions ? 'new' : false, // Use new headless mode in GitHub Actions
             defaultViewport: {
                 width: 375,
                 height: 812
@@ -344,7 +348,50 @@ async function main() {
                 '--window-size=375,812',
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-blink-features=AutomationControlled'
+                '--disable-blink-features=AutomationControlled',
+                '--disable-extensions',
+                '--disable-software-rasterizer',
+                '--disable-dev-shm-usage',
+                '--disable-setuid-sandbox',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--ignore-certificate-errors',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-notifications',
+                '--disable-default-apps',
+                '--disable-popup-blocking',
+                '--disable-save-password-bubble',
+                '--disable-translate',
+                '--disable-sync',
+                '--disable-background-networking',
+                '--metrics-recording-only',
+                '--disable-default-apps',
+                '--disable-popup-blocking',
+                '--disable-save-password-bubble',
+                '--disable-translate',
+                '--disable-sync',
+                '--disable-background-networking',
+                '--metrics-recording-only',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-breakpad',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+                '--disable-ipc-flooding-protection',
+                '--enable-features=NetworkService,NetworkServiceInProcess',
+                '--force-color-profile=srgb',
+                '--metrics-recording-only',
+                '--no-default-browser-check',
+                '--no-experiments',
+                '--no-pings',
+                '--no-zygote',
+                '--password-store=basic',
+                '--use-mock-keychain',
+                '--use-gl=swiftshader',
+                '--window-size=375,812'
             ]
         });
 
