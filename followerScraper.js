@@ -137,77 +137,29 @@ async function findFollowButtons(page) {
     try {
         log.info('Looking for follow buttons...');
 
-        // Wait for the dialog to be present
-        await page.waitForSelector('div[role="dialog"]', { timeout: 10000 });
-
-        // Try multiple selectors for follow buttons
+        // More specific selectors for Instagram follow buttons
         const buttonSelectors = [
-            'button:has-text("Follow")',
-            'button[class*="x1i10hfl"]',
-            'button[class*="x1n2onr6"]',
-            'button[class*="x1q0g3np"]',
-            'button[class*="x1lliihq"]',
-            'button[class*="_acan"]',
-            'button[class*="_acap"]',
-            'button[class*="_acas"]',
-            'button[class*="_aj1-"]'
+            'button._acan._acap._acas',
+            'button._acan._acap._acas._aj1-',
+            'button[type="button"]._acan._acap._acas'
         ];
 
         let followButtons = [];
 
         // Try each selector
         for (const selector of buttonSelectors) {
-            try {
-                const buttons = await page.$$(selector);
-                for (const button of buttons) {
-                    try {
-                        const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
-                        const buttonHTML = await button.evaluate(btn => btn.outerHTML);
+            const buttons = await page.$$(selector);
+            for (const button of buttons) {
+                try {
+                    const isDisabled = await button.evaluate(btn => btn.disabled || btn.getAttribute('disabled') !== null);
+                    if (isDisabled) continue;
 
-                        // Check if it's a valid follow button
-                        if (buttonText.includes('follow') &&
-                            !buttonText.includes('following') &&
-                            !buttonText.includes('unfollow') &&
-                            !buttonHTML.includes('disabled')) {
-                            followButtons.push(button);
-                        }
-                    } catch (error) {
-                        continue;
+                    const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
+                    if (buttonText === 'follow') {
+                        followButtons.push(button);
                     }
-                }
-            } catch (error) {
-                continue;
-            }
-        }
-
-        // If no buttons found, try scrolling to load more
-        if (followButtons.length === 0) {
-            log.info('No buttons found, scrolling to load more...');
-            await page.evaluate(() => {
-                const dialog = document.querySelector('div[role="dialog"]');
-                if (dialog) {
-                    dialog.scrollTop = dialog.scrollHeight;
-                }
-            });
-            await randomDelay(2000, 3000);
-
-            // Try finding buttons again after scrolling
-            for (const selector of buttonSelectors) {
-                const buttons = await page.$$(selector);
-                for (const button of buttons) {
-                    try {
-                        const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
-                        const buttonHTML = await button.evaluate(btn => btn.outerHTML);
-
-                        if (buttonText.includes('follow') &&
-                            !buttonText.includes('following') &&
-                            !buttonText.includes('unfollow') &&
-                            !buttonHTML.includes('disabled')) {
-                            followButtons.push(button);
-                        }
-                    } catch (error) {
-                        continue;
-                    }
+                } catch (error) {
+                    continue;
                 }
             }
         }
@@ -223,28 +175,34 @@ async function findFollowButtons(page) {
 async function followUser(page, button) {
     try {
         // Scroll button into view
-        await button.evaluate(btn => btn.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-        await randomDelay(2000, 3000);
+        await button.evaluate(btn => {
+            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return new Promise(resolve => setTimeout(resolve, 500));
+        });
+        await randomDelay(1000, 2000);
 
         // Get button text before clicking
-        const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
+        const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
 
-        // Only click if it's a follow button
-        if (buttonText.includes('follow') && !buttonText.includes('following')) {
-            // Click the button
-            await button.click();
-            await randomDelay(2000, 3000);
-
-            // Verify the follow action
-            const newButtonText = await button.evaluate(btn => btn.textContent.toLowerCase());
-            if (newButtonText.includes('following')) {
-                log.success('Successfully followed user');
-                return true;
-            } else {
-                throw new Error('Follow action not confirmed');
-            }
-        } else {
+        if (buttonText !== 'follow') {
             throw new Error('Not a follow button');
+        }
+
+        // Click using JavaScript click()
+        await button.evaluate(btn => btn.click());
+        await randomDelay(2000, 3000);
+
+        // Verify the follow action
+        const newButtonText = await button.evaluate(btn => {
+            const text = btn.textContent.trim().toLowerCase();
+            return text;
+        });
+
+        if (newButtonText === 'following') {
+            log.success('Successfully followed user');
+            return true;
+        } else {
+            throw new Error('Follow action not confirmed');
         }
     } catch (error) {
         log.error('Error following user:', error.message);
@@ -252,71 +210,48 @@ async function followUser(page, button) {
     }
 }
 
-async function followUsers(page, targetProfile) {
+async function followUsers(page) {
     try {
         let followsToday = 0;
-        const maxFollows = 100;
-        let noButtonsCount = 0;
-        const maxNoButtonsAttempts = 3;
+        let retryCount = 0;
+        const maxRetries = 3;
 
-        while (followsToday < maxFollows) {
-            try {
-                // Find and click follow buttons
-                const followButtons = await findFollowButtons(page);
-                if (followButtons.length === 0) {
-                    noButtonsCount++;
-                    if (noButtonsCount >= maxNoButtonsAttempts) {
-                        log.warning('No follow buttons found after multiple attempts, refreshing page...');
-                        await page.reload();
-                        await randomDelay(5000, 8000);
-                        noButtonsCount = 0;
-                        continue;
-                    }
-                    log.warning('No follow buttons found, waiting before retry...');
-                    await randomDelay(3000, 5000);
-                    continue;
-                }
+        while (followsToday < MAX_FOLLOWS && retryCount < maxRetries) {
+            const followButtons = await findFollowButtons(page);
 
-                // Reset no buttons counter if we found buttons
-                noButtonsCount = 0;
-
-                // Follow users
-                for (const button of followButtons) {
-                    if (followsToday >= maxFollows) break;
-
-                    try {
-                        await followUser(page, button);
-                        followsToday++;
-                        await updateFollowCount(followsToday);
-                        log.success(`Successfully followed user ${followsToday}/${maxFollows}`);
-
-                        // Add random delay between follows
-                        await randomDelay(2000, 5000);
-                    } catch (error) {
-                        log.warning(`Skipping user: ${error.message}`);
-                        continue;
-                    }
-                }
-
-                // Scroll to load more
-                log.info('Scrolling to load more followers...');
-                await page.evaluate(() => {
-                    const dialog = document.querySelector('div[role="dialog"]');
-                    if (dialog) {
-                        dialog.scrollTop = dialog.scrollHeight;
-                    }
-                });
-                await randomDelay(2000, 3000);
-
-            } catch (error) {
-                log.warning(`Error during follow cycle: ${error.message}`);
-                await page.reload();
-                await randomDelay(5000, 8000);
+            if (followButtons.length === 0) {
+                log.info('No follow buttons found, scrolling to load more...');
+                await scrollFollowersList(page);
+                retryCount++;
                 continue;
             }
+
+            retryCount = 0; // Reset retry count when buttons are found
+
+            for (const button of followButtons) {
+                if (followsToday >= MAX_FOLLOWS) break;
+
+                try {
+                    const followed = await followUser(page, button);
+                    if (followed) {
+                        followsToday++;
+                        await updateFollowCount(client.db('instagram_bot'), followsToday);
+                        log.success(`Successfully followed user ${followsToday}/${MAX_FOLLOWS}`);
+                        await randomDelay(3000, 5000);
+                    }
+                } catch (error) {
+                    log.warning(`Failed to follow user: ${error.message}`);
+                    await randomDelay(2000, 3000);
+                    continue;
+                }
+            }
+
+            // Scroll to load more buttons
+            await scrollFollowersList(page);
+            await randomDelay(2000, 3000);
         }
 
-        log.success(`Completed following ${followsToday} users`);
+        return followsToday;
     } catch (error) {
         log.error(`Error in followUsers: ${error.message}`);
         throw error;
@@ -561,7 +496,7 @@ async function main() {
             await scrollFollowersList(page);
 
             // Step 3: Find and follow users
-            await followUsers(page, null);
+            await followUsers(page);
 
             // If we've reached the max follows, break the loop
             if (followCount >= MAX_FOLLOWS) break;
