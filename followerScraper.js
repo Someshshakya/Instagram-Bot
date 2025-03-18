@@ -207,15 +207,14 @@ async function findFollowButtons(page) {
 
         // Updated selectors for Instagram follow buttons
         const buttonSelectors = [
-            'button._acan._acap._acas:not(._acat)',
-            'button._acan._acap._acas._aj1-:not(._acat)',
-            'button[type="button"]._acan._acap._acas:not(._acat)',
-            'button._acas:not(._acat)',
-            'button[class*="_acan"][class*="_acap"][class*="_acas"]:not(._acat)',
-            'button:has-text("Follow")',
-            'button[class*="x1i10hfl"][class*="_acan"]:not(._acat)',
-            'button[class*="x1n2onr6"][class*="_acan"]:not(._acat)',
-            'div[role="button"]:has(div:has-text("Follow"))'
+            'button._acan._acap._acas',
+            'button[type="button"]._acan._acap._acas',
+            'button._ab1k._ab1l._ab1m',
+            'button[class*="_acan"][class*="_acap"]',
+            'button[class*="x1i10hfl"]',
+            'button[class*="_acas"]:not([disabled])',
+            'button[type="button"]:not([disabled])',
+            'div[role="button"]'
         ];
 
         let followButtons = [];
@@ -238,16 +237,22 @@ async function findFollowButtons(page) {
                                 display: window.getComputedStyle(btn).display,
                                 visibility: window.getComputedStyle(btn).visibility,
                                 rect: btn.getBoundingClientRect()
-                            }
+                            },
+                            ariaLabel: btn.getAttribute('aria-label'),
+                            role: btn.getAttribute('role'),
+                            disabled: btn.disabled || btn.getAttribute('disabled') !== null
                         }));
 
                         log.debug(`Button info: ${JSON.stringify(buttonInfo)}`);
 
                         const isVisible = await button.evaluate(btn => {
                             const rect = btn.getBoundingClientRect();
-                            return rect.width > 0 && rect.height > 0 &&
-                                window.getComputedStyle(btn).display !== 'none' &&
-                                window.getComputedStyle(btn).visibility !== 'hidden';
+                            const style = window.getComputedStyle(btn);
+                            return rect.width > 0 &&
+                                rect.height > 0 &&
+                                style.display !== 'none' &&
+                                style.visibility !== 'hidden' &&
+                                style.opacity !== '0';
                         });
 
                         if (!isVisible) {
@@ -255,23 +260,23 @@ async function findFollowButtons(page) {
                             continue;
                         }
 
-                        const isDisabled = await button.evaluate(btn =>
-                            btn.disabled ||
-                            btn.getAttribute('disabled') !== null ||
-                            btn.classList.contains('_acat')
-                        );
-
+                        const isDisabled = buttonInfo.disabled;
                         if (isDisabled) {
                             log.debug(`Button disabled: ${buttonInfo.text}`);
                             continue;
                         }
 
+                        // Check for follow text in button content or aria-label
                         const buttonText = buttonInfo.text.toLowerCase();
-                        if (buttonText === 'follow') {
-                            log.debug(`Valid follow button found: ${buttonInfo.text}`);
-                            followButtons.push(button);
-                        } else {
-                            log.debug(`Button text not 'follow': ${buttonInfo.text}`);
+                        const ariaLabel = (buttonInfo.ariaLabel || '').toLowerCase();
+
+                        if (buttonText.includes('follow') || ariaLabel.includes('follow')) {
+                            // Additional check to exclude "following" and "unfollow" buttons
+                            if (!buttonText.includes('following') && !buttonText.includes('unfollow') &&
+                                !ariaLabel.includes('following') && !ariaLabel.includes('unfollow')) {
+                                log.debug(`Valid follow button found: ${buttonInfo.text}`);
+                                followButtons.push(button);
+                            }
                         }
 
                         // Store debug info
@@ -300,12 +305,26 @@ async function findFollowButtons(page) {
             await page.screenshot({ path: 'no-buttons-found.png', fullPage: true });
             log.debug('Debug info for all buttons:', JSON.stringify(debugInfo, null, 2));
 
-            // Get page content for debugging
-            const content = await page.evaluate(() => {
-                const dialog = document.querySelector('div[role="dialog"]') || document.querySelector('div[class*="x1n2onr6"]');
-                return dialog ? dialog.innerHTML : 'No dialog found';
+            // Get dialog content for debugging
+            const dialogContent = await page.evaluate(() => {
+                const dialog = document.querySelector('div[role="dialog"]') ||
+                    document.querySelector('div[class*="x1n2onr6"]');
+                if (dialog) {
+                    return {
+                        innerHTML: dialog.innerHTML,
+                        childCount: dialog.children.length,
+                        classes: dialog.className,
+                        buttons: Array.from(dialog.querySelectorAll('button')).map(btn => ({
+                            text: btn.textContent.trim(),
+                            classes: btn.className,
+                            ariaLabel: btn.getAttribute('aria-label'),
+                            role: btn.getAttribute('role')
+                        }))
+                    };
+                }
+                return 'No dialog found';
             });
-            log.debug('Dialog content:', content);
+            log.debug('Dialog content:', dialogContent);
         }
 
         log.info(`Found ${followButtons.length} follow buttons`);
