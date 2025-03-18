@@ -1,0 +1,46 @@
+name: Instagram Bot Automation
+
+on:
+  schedule:
+    - cron: '0 10 * * *'  # Run at 10:00 AM UTC daily
+  workflow_dispatch:  # Allow manual trigger
+  push:
+    branches:
+      - main  # Trigger on push to main branch
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install dependencies
+        run: npm install
+        
+      - name: Run Instagram Bot
+        env:
+          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
+          INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        run: node followerScraper.js
+        
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git add .
+          git commit -m "chore: Update follow stats [skip ci]" || echo "No changes to commit"
+          git push origin main
+          
+      - name: Trigger new build
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type":"workflow_dispatch"}' 
