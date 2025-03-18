@@ -28,7 +28,7 @@ jobs:
         
       - name: Run Instagram Bot
         env:
-          MONGO_URI: ${{ secrets.MONGO_URI }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
           INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
           INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
           CHROME_PATH: '/usr/bin/google-chrome'

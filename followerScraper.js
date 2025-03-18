@@ -6,7 +6,7 @@ const { MongoClient } = require('mongodb');
 const log = require('./utils/logger');
 
 // Validate required environment variables
-const requiredEnvVars = ['MONGO_URI', 'INSTAGRAM_USERNAME', 'INSTAGRAM_PASSWORD'];
+const requiredEnvVars = ['MONGODB_URI', 'INSTAGRAM_USERNAME', 'INSTAGRAM_PASSWORD'];
 const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
 
 if (missingEnvVars.length > 0) {
@@ -27,7 +27,7 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY = 60000;
 
 // Use MongoDB URL from environment variables with fallback
-const uri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
+const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
 const client = new MongoClient(uri, {
     serverSelectionTimeoutMS: 5000,
     connectTimeoutMS: 10000
