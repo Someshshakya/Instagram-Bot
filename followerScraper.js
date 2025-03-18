@@ -6,7 +6,11 @@ require('dotenv').config();
 const { MongoClient } = require('mongodb');
 
 // Initialize puppeteer with StealthPlugin
-puppeteer.use(StealthPlugin());
+const stealthPlugin = StealthPlugin();
+// Disable problematic evasions for GitHub Actions
+stealthPlugin.enabledEvasions.delete('chrome.runtime');
+stealthPlugin.enabledEvasions.delete('navigator.plugins');
+puppeteer.use(stealthPlugin);
 
 // Constants for cookie management
 const COOKIE_PATH = 'cookies.json';
@@ -590,8 +594,10 @@ async function main() {
         try {
             const launchOptions = {
                 product: 'chrome',
-                headless: isGitHubActions ? true : false,
+                headless: isGitHubActions ? 'new' : false,
                 ignoreHTTPSErrors: true,
+                timeout: 60000,
+                protocolTimeout: 60000,
                 defaultViewport: {
                     width: 1280,
                     height: 720,
@@ -613,36 +619,11 @@ async function main() {
                     '--disable-background-timer-throttling',
                     '--disable-backgrounding-occluded-windows',
                     '--disable-breakpad',
-                    '--disable-client-side-phishing-detection',
                     '--disable-component-update',
-                    '--disable-default-apps',
-                    '--disable-dev-shm-usage',
-                    '--disable-domain-reliability',
+                    '--disable-features=IsolateOrigins,site-per-process,TranslateUI',
+                    '--disable-blink-features=AutomationControlled',
                     '--disable-extensions',
-                    '--disable-features=AudioServiceOutOfProcess',
-                    '--disable-hang-monitor',
-                    '--disable-ipc-flooding-protection',
                     '--disable-notifications',
-                    '--disable-offer-store-unmasked-wallet-cards',
-                    '--disable-popup-blocking',
-                    '--disable-print-preview',
-                    '--disable-prompt-on-repost',
-                    '--disable-renderer-backgrounding',
-                    '--disable-setuid-sandbox',
-                    '--disable-speech-api',
-                    '--disable-sync',
-                    '--disable-translate',
-                    '--disable-webgl',
-                    '--disable-webgl2',
-                    '--metrics-recording-only',
-                    '--no-default-browser-check',
-                    '--no-experiments',
-                    '--no-pings',
-                    '--no-sandbox',
-                    '--no-zygote',
-                    '--password-store=basic',
-                    '--use-gl=swiftshader',
-                    '--use-mock-keychain',
                     '--window-size=1280,720'
                 ]
             };
@@ -652,31 +633,34 @@ async function main() {
                 launchOptions.args.push(
                     '--single-process',
                     '--deterministic-fetch',
-                    '--proxy-server="direct://"',
-                    '--proxy-bypass-list=*',
-                    '--enable-automation'
+                    '--no-startup-window',
+                    '--disable-software-rasterizer',
+                    '--disable-default-apps',
+                    '--disable-sync',
+                    '--metrics-recording-only',
+                    '--password-store=basic'
                 );
 
                 // Set executable path for GitHub Actions
                 launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH ||
                     '/usr/bin/google-chrome-stable';
-
-                // Increase timeout for GitHub Actions
-                launchOptions.timeout = 60000;
             }
 
             log.info('Browser launch options configured, attempting to launch...');
             browser = await puppeteer.launch(launchOptions);
             log.success('🌐 Browser launched successfully');
 
-            // Additional browser setup for GitHub Actions
-            if (isGitHubActions) {
-                const defaultContext = browser.defaultBrowserContext();
-                await defaultContext.overridePermissions('https://www.instagram.com', [
-                    'notifications',
-                    'geolocation'
-                ]);
-            }
+            // Create a new page with reduced stealth measures
+            const context = await browser.createIncognitoBrowserContext();
+            page = await context.newPage();
+
+            // Basic anti-detection scripts
+            await page.evaluateOnNewDocument(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                window.chrome = { runtime: {} };
+            });
+
         } catch (launchError) {
             log.error('Failed to launch browser:', launchError.message);
             log.error('Launch error details:', {
@@ -688,8 +672,6 @@ async function main() {
             });
             throw launchError;
         }
-
-        page = await browser.newPage();
 
         // Generate and set a mobile User-Agent
         const mobileUserAgent = new userAgent({ deviceCategory: 'mobile' });
