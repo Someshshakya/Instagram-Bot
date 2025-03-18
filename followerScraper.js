@@ -580,12 +580,16 @@ async function main() {
             log.info(`📊 Follows today: ${stats.followsToday || 0}`);
         }
 
+        // Check if running in GitHub Actions
+        const isGitHubActions = process.env.GITHUB_ACTIONS === 'true';
+        log.info(`Running in ${isGitHubActions ? 'GitHub Actions' : 'local'} environment`);
+
         // Launch browser with enhanced anti-detection measures
         log.browser('Launching browser with stealth mode...');
 
         try {
-            browser = await puppeteer.launch({
-                headless: false,
+            const launchOptions = {
+                headless: isGitHubActions ? 'new' : false,
                 executablePath: process.env.CHROME_PATH || undefined,
                 defaultViewport: {
                     width: 375,
@@ -615,11 +619,38 @@ async function main() {
                     '--disable-features=ScriptStreaming',
                     '--enable-automation',
                     '--ignore-certificate-errors',
-                    '--no-first-run',
-                    '--use-fake-ui-for-media-stream',
-                    '--use-fake-device-for-media-stream'
+                    '--no-first-run'
                 ]
-            });
+            };
+
+            // Add additional arguments for GitHub Actions environment
+            if (isGitHubActions) {
+                launchOptions.args.push(
+                    '--single-process',
+                    '--no-zygote',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-canvas-aa',
+                    '--disable-2d-canvas-clip-aa',
+                    '--disable-gl-drawing-for-tests',
+                    '--disable-software-rasterizer',
+                    '--mute-audio',
+                    '--disable-background-networking',
+                    '--disable-default-apps',
+                    '--disable-extensions',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--hide-scrollbars',
+                    '--metrics-recording-only',
+                    '--no-sandbox',
+                    '--no-startup-window',
+                    '--deterministic-fetch',
+                    '--remote-debugging-port=9222'
+                );
+            }
+
+            browser = await puppeteer.launch(launchOptions);
             log.success('🌐 Browser launched successfully');
         } catch (launchError) {
             log.error('Failed to launch browser:', launchError.message);
