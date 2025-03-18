@@ -146,7 +146,7 @@ async function loadSuggestionsPage(page) {
         }
 
         return true;
-    } catch (error) {
+        } catch (error) {
         log.error('Error loading suggestions page:', error.message);
         await page.screenshot({ path: 'load-suggestions-error.png', fullPage: true });
         return false;
@@ -312,7 +312,7 @@ async function findFollowButtons(page) {
                 const dialog = document.querySelector('div[role="dialog"]') ||
                     document.querySelector('div[class*="x1n2onr6"]');
                 if (dialog) {
-                    return {
+                return {
                         innerHTML: dialog.innerHTML,
                         childCount: dialog.children.length,
                         classes: dialog.className,
@@ -378,7 +378,7 @@ async function followUser(page, button) {
         // Check if button is still valid
         try {
             await button.evaluate(btn => btn.isConnected);
-        } catch (e) {
+                } catch (e) {
             log.error('Button is no longer attached to DOM');
         }
         throw error;
@@ -461,7 +461,7 @@ async function followUsers(page) {
                         log.info('Error screenshot saved');
                     } catch (e) { }
                     await randomDelay(2000, 3000);
-                    continue;
+                continue;
                 }
             }
 
@@ -663,8 +663,8 @@ async function performLogin(page) {
             const notNowButton = await page.waitForSelector('button:has-text("Not Now")', { timeout: 5000 });
             if (notNowButton) {
                 await notNowButton.click();
-                await randomDelay(1000, 2000);
-            }
+                                await randomDelay(1000, 2000);
+                            }
         } catch (e) { }
 
         // Handle notifications popup
@@ -672,7 +672,7 @@ async function performLogin(page) {
             const notNowButton = await page.waitForSelector('button:has-text("Not Now")', { timeout: 5000 });
             if (notNowButton) {
                 await notNowButton.click();
-                await randomDelay(1000, 2000);
+                                    await randomDelay(1000, 2000);
             }
         } catch (e) { }
 
@@ -702,7 +702,7 @@ async function checkDailyFollowStats() {
 
         if (!todayStats) {
             log.info('No follow activity recorded for today. Starting fresh.');
-            return {
+                                        return {
                 followsToday: 0,
                 canContinue: true
             };
@@ -862,12 +862,12 @@ async function main() {
         log.error('Stack trace:', error.stack);
 
         if (page) {
-            await page.screenshot({ path: 'error-screenshot.png', fullPage: true });
+                await page.screenshot({ path: 'error-screenshot.png', fullPage: true });
             log.info('📸 Error screenshot saved as error-screenshot.png');
         }
 
         if (browser) {
-            await browser.close();
+                await browser.close();
             log.info('🌐 Browser closed after error.');
         }
 
