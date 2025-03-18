@@ -3,9 +3,10 @@ const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { MongoClient } = require('mongodb');
+require('dotenv').config();
 
-// MongoDB connection string
-const MONGODB_URI = 'mongodb://localhost:27017';
+// MongoDB connection string from environment
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 const MAX_FOLLOWS = 100;
 
 // Configure logging
