@@ -17,6 +17,13 @@ const RATE_LIMIT_DELAY = 30000;
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 60000;
 
+// Use MongoDB URL from environment variables with fallback
+const uri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
+const client = new MongoClient(uri, {
+    serverSelectionTimeoutMS: 5000,
+    connectTimeoutMS: 10000
+});
+
 // Add cookie loading function
 async function loadCookies(page) {
     try {
