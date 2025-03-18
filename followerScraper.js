@@ -1,52 +1,14 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const puppeteer = require('puppeteer');
 const userAgent = require('user-agents');
 const fs = require('fs');
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
-
-// Initialize puppeteer with minimal stealth options
-const stealthPlugin = StealthPlugin({
-    enabledEvasions: {
-        webgl: true,
-        hairline: true,
-        chrome: {
-            runtime: false
-        },
-        navigator: {
-            plugins: false,
-            webdriver: true,
-            languages: true,
-            permissions: false,
-            hardwareConcurrency: false
-        }
-    }
-});
-puppeteer.use(stealthPlugin);
+const log = require('./utils/logger');
 
 // Constants for cookie management
 const COOKIE_PATH = 'cookies.json';
 const INSTAGRAM_URL = 'https://www.instagram.com/';
 const LOGIN_URL = 'https://www.instagram.com/accounts/login/';
-
-// Enhanced logging function with timestamps and emojis
-const log = {
-    info: (message) => console.log(`[INSTA-BOT] ℹ️ ${new Date().toISOString()} - ${message}`),
-    success: (message) => console.log(`[INSTA-BOT] ✅ ${new Date().toISOString()} - ${message}`),
-    warning: (message) => console.log(`[INSTA-BOT] ⚠️ ${new Date().toISOString()} - ${message}`),
-    error: (message) => console.error(`[INSTA-BOT] ❌ ${new Date().toISOString()} - ${message}`),
-    debug: (message) => console.log(`[INSTA-BOT] 🔍 ${new Date().toISOString()} - ${message}`),
-    stats: (message) => console.log(`[INSTA-BOT] 📊 ${new Date().toISOString()} - ${message}`),
-    security: (message) => console.log(`[INSTA-BOT] 🔒 ${new Date().toISOString()} - ${message}`),
-    browser: (message) => console.log(`[INSTA-BOT] 🌐 ${new Date().toISOString()} - ${message}`)
-};
-
-// Use MongoDB URL from environment variables with fallback
-const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
-const client = new MongoClient(uri, {
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 10000
-});
 
 const MAX_FOLLOWS = 100;
 const MIN_FOLLOW_DELAY = 5000;
@@ -600,50 +562,21 @@ async function main() {
         const isGitHubActions = process.env.GITHUB_ACTIONS === 'true';
         log.info(`Running in ${isGitHubActions ? 'GitHub Actions' : 'local'} environment`);
 
-        // Launch browser with enhanced anti-detection measures
-        log.browser('Launching browser with stealth mode...');
+        // Launch browser with basic configuration
+        log.browser('Launching browser...');
 
         try {
             const launchOptions = {
                 headless: isGitHubActions,
-                ignoreHTTPSErrors: true,
-                timeout: 120000,
-                protocolTimeout: 120000,
-                pipe: true,
-                dumpio: true,
-                defaultViewport: null,
+                executablePath: process.env.CHROME_PATH || undefined,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-gpu',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
-                    '--disable-extensions',
-                    '--disable-web-security',
-                    '--disable-features=site-per-process',
-                    '--ignore-certificate-errors',
-                    '--allow-running-insecure-content',
-                    '--disable-blink-features=AutomationControlled',
-                    '--lang=en-US,en'
+                    '--window-size=1280,720'
                 ]
             };
-
-            // Add GitHub Actions specific configurations
-            if (isGitHubActions) {
-                // Remove executablePath to use bundled Chromium
-                launchOptions.args.push(
-                    '--disable-software-rasterizer',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding',
-                    '--disable-features=TranslateUI',
-                    '--metrics-recording-only',
-                    '--no-default-browser-check',
-                    '--password-store=basic'
-                );
-            }
 
             log.info('Browser launch options configured, attempting to launch...');
             browser = await puppeteer.launch(launchOptions);
@@ -652,34 +585,10 @@ async function main() {
             // Create a new page
             page = await browser.newPage();
 
-            // Set up basic evasions directly
-            await page.evaluateOnNewDocument(() => {
-                // Pass webdriver check
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
-
-                // Pass chrome check
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: function () { },
-                    csi: function () { },
-                    app: {}
-                };
-
-                // Pass plugins check
-                const mockPlugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                ];
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => mockPlugins,
-                    enumerable: true,
-                    configurable: true
-                });
-            });
-
             // Set a custom user agent
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+            const userAgentString = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+            await page.setUserAgent(userAgentString);
+            log.browser(`🌍 Using User-Agent: ${userAgentString}`);
 
             // Set viewport
             await page.setViewport({
@@ -688,15 +597,10 @@ async function main() {
                 deviceScaleFactor: 1
             });
 
-            // Enable request interception
-            await page.setRequestInterception(true);
-            page.on('request', (request) => {
-                // Block unnecessary resources
-                if (['image', 'stylesheet', 'font'].includes(request.resourceType())) {
-                    request.abort();
-                } else {
-                    request.continue();
-                }
+            // Basic anti-detection
+            await page.evaluateOnNewDocument(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                window.navigator.chrome = { runtime: {} };
             });
 
         } catch (launchError) {
@@ -705,7 +609,8 @@ async function main() {
                 errorName: launchError.name,
                 errorMessage: launchError.message,
                 errorStack: launchError.stack,
-                isGitHubActions
+                isGitHubActions,
+                chromePath: process.env.CHROME_PATH
             });
             throw launchError;
         }
