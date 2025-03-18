@@ -105,26 +105,42 @@ async function scrollFollowersList(page) {
     try {
         await page.evaluate(() => {
             return new Promise((resolve) => {
-                const dialog = document.querySelector('div[role="dialog"]');
+                const dialog = document.querySelector('div[role="dialog"]') || document.querySelector('div[class*="x1n2onr6"]');
                 if (!dialog) {
                     resolve();
                     return;
                 }
 
-                let totalHeight = 0;
+                let previousHeight = dialog.scrollHeight;
+                let scrollAttempts = 0;
+                const maxScrollAttempts = 3;
                 const distance = 300;
-                const timer = setInterval(() => {
-                    const scrollHeight = dialog.scrollHeight;
-                    dialog.scrollBy(0, distance);
-                    totalHeight += distance;
 
-                    if (totalHeight >= scrollHeight - dialog.clientHeight) {
-                        clearInterval(timer);
-                        resolve();
+                const timer = setInterval(() => {
+                    dialog.scrollBy(0, distance);
+
+                    // Check if we've reached the bottom or if content hasn't loaded
+                    if (dialog.scrollHeight === previousHeight) {
+                        scrollAttempts++;
+                        if (scrollAttempts >= maxScrollAttempts) {
+                            clearInterval(timer);
+                            resolve();
+                            return;
+                        }
+                    } else {
+                        scrollAttempts = 0;
+                        previousHeight = dialog.scrollHeight;
                     }
                 }, 200);
+
+                // Set a maximum time for scrolling
+                setTimeout(() => {
+                    clearInterval(timer);
+                    resolve();
+                }, 5000);
             });
         });
+
         await randomDelay(2000, 3000);
         return true;
     } catch (error) {
@@ -137,26 +153,86 @@ async function findFollowButtons(page) {
     try {
         log.info('Looking for follow buttons...');
 
-        // More specific selectors for Instagram follow buttons
+        // Updated selectors for Instagram follow buttons
         const buttonSelectors = [
             'button._acan._acap._acas',
             'button._acan._acap._acas._aj1-',
-            'button[type="button"]._acan._acap._acas'
+            'button[type="button"]._acan._acap._acas',
+            'button:has-text("Follow")',
+            'button[class*="x1i10hfl"][class*="_acan"]',
+            'button[class*="x1n2onr6"][class*="_acan"]',
+            'button[class*="_acap"][class*="_acan"]'
         ];
 
         let followButtons = [];
 
         // Try each selector
         for (const selector of buttonSelectors) {
-            const buttons = await page.$$(selector);
-            for (const button of buttons) {
-                try {
-                    const isDisabled = await button.evaluate(btn => btn.disabled || btn.getAttribute('disabled') !== null);
-                    if (isDisabled) continue;
+            try {
+                await page.waitForSelector(selector, { timeout: 5000 });
+                const buttons = await page.$$(selector);
 
-                    const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
-                    if (buttonText === 'follow') {
-                        followButtons.push(button);
+                for (const button of buttons) {
+                    try {
+                        const isVisible = await button.evaluate(btn => {
+                            const rect = btn.getBoundingClientRect();
+                            return rect.width > 0 && rect.height > 0 &&
+                                window.getComputedStyle(btn).display !== 'none' &&
+                                window.getComputedStyle(btn).visibility !== 'hidden';
+                        });
+
+                        if (!isVisible) continue;
+
+                        const isDisabled = await button.evaluate(btn =>
+                            btn.disabled ||
+                            btn.getAttribute('disabled') !== null ||
+                            btn.classList.contains('_acat')  // Instagram's disabled button class
+                        );
+
+                        if (isDisabled) continue;
+
+                        const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
+                        if (buttonText === 'follow') {
+                            followButtons.push(button);
+                        }
+                    } catch (error) {
+                        continue;
+                    }
+                }
+
+                if (followButtons.length > 0) {
+                    break; // Exit if we found valid buttons
+                }
+            } catch (error) {
+                continue; // Try next selector if current one fails
+            }
+        }
+
+        // If no buttons found, try scrolling and searching again
+        if (followButtons.length === 0) {
+            log.info('No follow buttons found, scrolling to load more...');
+            await scrollFollowersList(page);
+            await randomDelay(2000, 3000);
+
+            // Try one more time after scrolling
+            for (const selector of buttonSelectors) {
+                try {
+                    const buttons = await page.$$(selector);
+                    for (const button of buttons) {
+                        try {
+                            const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
+                            const isDisabled = await button.evaluate(btn =>
+                                btn.disabled ||
+                                btn.getAttribute('disabled') !== null ||
+                                btn.classList.contains('_acat')
+                            );
+
+                            if (!isDisabled && buttonText === 'follow') {
+                                followButtons.push(button);
+                            }
+                        } catch (error) {
+                            continue;
+                        }
                     }
                 } catch (error) {
                     continue;
