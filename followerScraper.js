@@ -251,6 +251,7 @@ async function findFollowButtons(page) {
 async function followUser(page, button) {
     try {
         // Scroll button into view
+        log.debug('Scrolling button into view...');
         await button.evaluate(btn => {
             btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
             return new Promise(resolve => setTimeout(resolve, 500));
@@ -259,12 +260,14 @@ async function followUser(page, button) {
 
         // Get button text before clicking
         const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
+        log.debug(`Initial button text: "${buttonText}"`);
 
         if (buttonText !== 'follow') {
-            throw new Error('Not a follow button');
+            throw new Error(`Invalid button text: "${buttonText}"`);
         }
 
         // Click using JavaScript click()
+        log.debug('Clicking follow button...');
         await button.evaluate(btn => btn.click());
         await randomDelay(2000, 3000);
 
@@ -273,15 +276,22 @@ async function followUser(page, button) {
             const text = btn.textContent.trim().toLowerCase();
             return text;
         });
+        log.debug(`Button text after click: "${newButtonText}"`);
 
         if (newButtonText === 'following') {
-            log.success('Successfully followed user');
+            log.success('✅ Follow action confirmed');
             return true;
         } else {
-            throw new Error('Follow action not confirmed');
+            throw new Error(`Follow not confirmed. Button text: "${newButtonText}"`);
         }
     } catch (error) {
-        log.error('Error following user:', error.message);
+        log.error(`Follow action failed: ${error.message}`);
+        // Check if button is still valid
+        try {
+            await button.evaluate(btn => btn.isConnected);
+        } catch (e) {
+            log.error('Button is no longer attached to DOM');
+        }
         throw error;
     }
 }
@@ -293,43 +303,95 @@ async function followUsers(page) {
         const maxRetries = 3;
 
         while (followsToday < MAX_FOLLOWS && retryCount < maxRetries) {
+            log.info('Searching for follow buttons...');
             const followButtons = await findFollowButtons(page);
 
             if (followButtons.length === 0) {
-                log.info('No follow buttons found, scrolling to load more...');
+                log.warning('No follow buttons found in current view');
+                log.info('Attempting to scroll to load more buttons...');
                 await scrollFollowersList(page);
                 retryCount++;
                 continue;
             }
 
+            log.info(`Found ${followButtons.length} potential follow buttons to process`);
             retryCount = 0; // Reset retry count when buttons are found
 
             for (const button of followButtons) {
-                if (followsToday >= MAX_FOLLOWS) break;
+                if (followsToday >= MAX_FOLLOWS) {
+                    log.info('Reached maximum follow limit for today');
+                    break;
+                }
 
                 try {
+                    log.info('Attempting to follow user...');
+
+                    // Get button text before clicking
+                    const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
+                    log.debug(`Button text before click: "${buttonText}"`);
+
+                    // Get username if possible
+                    try {
+                        const username = await page.evaluate(btn => {
+                            const userElement = btn.closest('div[role="button"]')?.querySelector('span') ||
+                                btn.closest('div[role="listitem"]')?.querySelector('span');
+                            return userElement ? userElement.textContent.trim() : 'unknown user';
+                        }, button);
+                        log.info(`Attempting to follow ${username}`);
+                    } catch (e) {
+                        log.debug('Could not get username');
+                    }
+
                     const followed = await followUser(page, button);
+
                     if (followed) {
                         followsToday++;
                         await updateFollowCount(client.db('instagram_bot'), followsToday);
-                        log.success(`Successfully followed user ${followsToday}/${MAX_FOLLOWS}`);
-                        await randomDelay(3000, 5000);
+                        log.success(`✅ Follow successful! Progress: ${followsToday}/${MAX_FOLLOWS}`);
+
+                        // Verify the button state after following
+                        try {
+                            const newButtonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
+                            log.debug(`Button text after click: "${newButtonText}"`);
+                        } catch (e) {
+                            log.debug('Could not verify button text after click');
+                        }
+
+                        // Add a longer delay between successful follows
+                        const delay = Math.floor(Math.random() * (MAX_FOLLOW_DELAY - MIN_FOLLOW_DELAY + 1)) + MIN_FOLLOW_DELAY;
+                        log.info(`Waiting ${delay / 1000} seconds before next follow...`);
+                        await randomDelay(delay, delay + 2000);
+                    } else {
+                        log.warning('Follow action did not complete successfully');
                     }
                 } catch (error) {
                     log.warning(`Failed to follow user: ${error.message}`);
+                    // Take a screenshot on error
+                    try {
+                        await page.screenshot({ path: `follow-error-${Date.now()}.png`, fullPage: true });
+                        log.info('Error screenshot saved');
+                    } catch (e) { }
                     await randomDelay(2000, 3000);
                     continue;
                 }
             }
 
-            // Scroll to load more buttons
+            // After processing all buttons in view, scroll to load more
+            log.info('Scrolling to load more follow buttons...');
             await scrollFollowersList(page);
             await randomDelay(2000, 3000);
+        }
+
+        if (followsToday >= MAX_FOLLOWS) {
+            log.success(`🎉 Successfully completed following ${followsToday} users!`);
+        } else if (retryCount >= maxRetries) {
+            log.warning(`Stopped after ${followsToday} follows due to maximum retry limit`);
         }
 
         return followsToday;
     } catch (error) {
         log.error(`Error in followUsers: ${error.message}`);
+        log.error(error.stack);
         throw error;
     }
 }
@@ -520,27 +582,53 @@ async function main() {
 
         // Launch browser with enhanced anti-detection measures
         log.browser('Launching browser with stealth mode...');
-        browser = await puppeteer.launch({
-            headless: false,
-            defaultViewport: {
-                width: 375,
-                height: 812
-            },
-            args: [
-                '--start-maximized',
-                '--disable-notifications',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--window-size=375,812',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-blink-features=AutomationControlled'
-            ]
-        });
 
-        log.success('🌐 Browser launched successfully');
+        try {
+            browser = await puppeteer.launch({
+                headless: false,
+                executablePath: process.env.CHROME_PATH || undefined,
+                defaultViewport: {
+                    width: 375,
+                    height: 812,
+                    deviceScaleFactor: 2,
+                    isMobile: true,
+                    hasTouch: true
+                },
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-gpu',
+                    '--window-size=375,812',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-infobars',
+                    '--disable-notifications',
+                    '--disable-default-apps',
+                    '--disable-extensions',
+                    '--disable-sync',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding',
+                    '--disable-features=ScriptStreaming',
+                    '--enable-automation',
+                    '--ignore-certificate-errors',
+                    '--no-first-run',
+                    '--use-fake-ui-for-media-stream',
+                    '--use-fake-device-for-media-stream'
+                ]
+            });
+            log.success('🌐 Browser launched successfully');
+        } catch (launchError) {
+            log.error('Failed to launch browser:', launchError.message);
+            if (launchError.message.includes('ENOENT')) {
+                log.error('Chrome executable not found. Please ensure Chrome is installed or set CHROME_PATH environment variable.');
+            }
+            throw launchError;
+        }
+
         page = await browser.newPage();
 
         // Generate and set a mobile User-Agent
