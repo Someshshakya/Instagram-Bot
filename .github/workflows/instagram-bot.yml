@@ -1,53 +1,47 @@
-name: Instagram Bot Automation
+name: Instagram Bot Daily Follow
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # Run at 10:00 AM UTC daily
+    # Run at 10:00 UTC (3:30 PM IST) daily
+    - cron: '0 10 * * *'
   workflow_dispatch:  # Allow manual trigger
-  push:
-    branches:
-      - main  # Trigger on push to main branch
-    paths-ignore:
-      - 'follow_stats.json'  # Ignore changes to follow stats file
 
 jobs:
-  run-bot:
+  follow-users:
     runs-on: ubuntu-latest
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true
+    
     steps:
-      - uses: actions/checkout@v3
+    - uses: actions/checkout@v2
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '18'
+        
+    - name: Install dependencies
+      run: npm install
+        
+    - name: Install Chromium
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y chromium-browser
+        
+    - name: Run Instagram Bot
+      env:
+        MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
+        INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
+        CHROME_PATH: /usr/bin/chromium-browser
+      run: node followerScraper.js
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-          
-      - name: Install dependencies
-        run: npm install
-        
-      - name: Run Instagram Bot
-        env:
-          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
-          INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-        run: node followerScraper.js
-        
-      - name: Commit and push changes
-        if: github.event_name != 'push'  # Only commit if not triggered by a push
-        run: |
-          git config --global user.name 'GitHub Actions'
-          git config --global user.email 'actions@github.com'
-          git add .
-          git commit -m "chore: Update follow stats [skip ci]" || echo "No changes to commit"
-          git push origin main
-          
-      - name: Trigger new build
-        if: github.event_name != 'push'  # Only trigger new build if not triggered by a push
-        run: |
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/dispatches \
-            -d '{"event_type":"workflow_dispatch"}' 
+    - name: Upload error screenshots
+      if: failure()
+      uses: actions/upload-artifact@v2
+      with:
+        name: error-screenshots
+        path: |
+          error-screenshot.png
+          no-buttons-found.png
+          followers-dialog.png
+          followers-load-failed.png
+          no-followers-link.png 

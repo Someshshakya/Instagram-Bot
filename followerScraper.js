@@ -19,7 +19,9 @@ const COOKIE_PATH = 'cookies.json';
 const INSTAGRAM_URL = 'https://www.instagram.com/';
 const LOGIN_URL = 'https://www.instagram.com/accounts/login/';
 
-const MAX_FOLLOWS = 100;
+// Update constants for daily limits
+const MAX_FOLLOWS = 140; // Daily target
+const DAILY_LIMIT = 150; // Hard limit per day - NEVER exceed this
 const MIN_FOLLOW_DELAY = 5000;
 const MAX_FOLLOW_DELAY = 8000;
 const RATE_LIMIT_DELAY = 30000;
@@ -527,44 +529,70 @@ async function updateFollowCount(database, count) {
 
         // Get current stats from followers collection
         const currentStats = await followersCollection.findOne({ _id: 'followers_stats' }) || {};
-        const lastUpdate = currentStats.lastUpdated ? new Date(currentStats.lastUpdated) : null;
+        const lastResetDate = currentStats.lastResetDate ? new Date(currentStats.lastResetDate) : null;
+
+        // STRICT CHECK: If we're at or above 150, stop immediately
+        if (currentStats.followsToday >= DAILY_LIMIT) {
+            log.warning(`🛑 CRITICAL: Daily follow limit of ${DAILY_LIMIT} reached or exceeded. Stopping immediately.`);
+            throw new Error('DAILY_LIMIT_REACHED');
+        }
 
         // Reset followsToday if it's a new day
-        if (!lastUpdate || lastUpdate < today) {
+        if (!lastResetDate || lastResetDate < today) {
             await followersCollection.updateOne(
                 { _id: 'followers_stats' },
                 {
                     $set: {
                         lastUpdated: new Date(),
-                        totalFollows: count,
+                        totalFollows: (currentStats.totalFollows || 0) + 1,
                         followsToday: 1,
                         lastResetDate: today,
-                        todayDate: today  // Set todayDate when starting to follow
+                        todayDate: today
                     }
                 },
                 { upsert: true }
             );
-            log.stats(`Reset daily counter. New follows today: 1`);
+            log.stats(`Reset daily counter. New follows today: 1, Total follows: ${(currentStats.totalFollows || 0) + 1}`);
         } else {
+            // STRICT CHECK: Prevent update if it would exceed the limit
+            const newFollowsToday = (currentStats.followsToday || 0) + 1;
+            if (newFollowsToday > DAILY_LIMIT) {
+                log.warning(`🛑 CRITICAL: Cannot proceed - would exceed daily limit of ${DAILY_LIMIT}`);
+                throw new Error('DAILY_LIMIT_REACHED');
+            }
+
             // Update existing stats
             await followersCollection.updateOne(
                 { _id: 'followers_stats' },
                 {
                     $set: {
                         lastUpdated: new Date(),
-                        totalFollows: count,
-                        todayDate: today  // Update todayDate with each follow
-                    },
-                    $inc: {
-                        followsToday: 1
+                        totalFollows: (currentStats.totalFollows || 0) + 1,
+                        followsToday: newFollowsToday,
+                        todayDate: today
                     }
                 },
                 { upsert: true }
             );
-            log.stats(`Updated follow count in MongoDB: ${count}, follows today: ${(currentStats.followsToday || 0) + 1}`);
+            log.stats(`Updated follow count - Total: ${(currentStats.totalFollows || 0) + 1}, Today: ${newFollowsToday}`);
+
+            // Warning when approaching limit
+            if (newFollowsToday >= DAILY_LIMIT - 10) {
+                log.warning(`⚠️ CAUTION: Approaching daily limit! (${newFollowsToday}/${DAILY_LIMIT})`);
+            }
+
+            // Stop if we've hit the limit
+            if (newFollowsToday >= DAILY_LIMIT) {
+                log.warning(`🛑 Daily limit of ${DAILY_LIMIT} reached. Stopping immediately.`);
+                throw new Error('DAILY_LIMIT_REACHED');
+            }
         }
     } catch (error) {
+        if (error.message === 'DAILY_LIMIT_REACHED') {
+            throw error; // Re-throw this specific error to handle it in the main function
+        }
         log.error('Error updating follow count:', error.message);
+        throw error; // Re-throw other errors to ensure we stop on any database issues
     }
 }
 
@@ -645,47 +673,45 @@ async function main() {
     let browser;
     let page;
     let followCount = 0;
-    let lastFollowedUser = null;
     let sessionStartTime = new Date();
 
     try {
         log.info('🚀 Starting Instagram automation...');
-        log.info(`🎯 Target: Follow maximum ${MAX_FOLLOWS} people`);
+        log.info(`🎯 Target: Follow maximum ${MAX_FOLLOWS} people (Hard limit: ${DAILY_LIMIT})`);
+        log.info(`⚠️ Script will stop immediately if ${DAILY_LIMIT} follows is reached`);
         log.info(`⏱️ Session started at: ${sessionStartTime.toISOString()}`);
 
-        // Connect to MongoDB with detailed error handling
+        // Connect to MongoDB and check daily limits
         try {
-            log.info(`Attempting to connect to MongoDB at: ${uri.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')}`);
             await client.connect();
             log.success('📦 Connected to MongoDB successfully');
+
+            const database = client.db('instagram_bot');
+            const followersCollection = database.collection('followers');
+
+            // Check if we've already hit the daily limit
+            const stats = await followersCollection.findOne({ _id: 'followers_stats' });
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            if (stats && stats.lastResetDate && new Date(stats.lastResetDate).getTime() === today.getTime()) {
+                // STRICT CHECK: If we're at or near limit, stop immediately
+                if (stats.followsToday >= DAILY_LIMIT) {
+                    log.warning(`🛑 CRITICAL: Daily limit of ${DAILY_LIMIT} already reached. Cannot proceed today.`);
+                    process.exit(0);
+                } else if (stats.followsToday >= DAILY_LIMIT - 10) {
+                    log.warning(`⚠️ CAUTION: Very close to daily limit! (${stats.followsToday}/${DAILY_LIMIT})`);
+                }
+                followCount = stats.followsToday;
+                log.info(`📊 Current follows today: ${followCount}/${DAILY_LIMIT}`);
+            }
         } catch (mongoError) {
             log.error('MongoDB Connection Error:', {
                 message: mongoError.message,
                 code: mongoError.code,
-                name: mongoError.name,
-                stack: mongoError.stack
+                name: mongoError.name
             });
             throw new Error(`Failed to connect to MongoDB: ${mongoError.message}`);
-        }
-
-        const database = client.db('instagram_bot');
-        const followersCollection = database.collection('followers');
-
-        // Get current follow count from followers collection with error handling
-        try {
-            const stats = await followersCollection.findOne({ _id: 'followers_stats' });
-            if (stats) {
-                followCount = stats.totalFollows || 0;
-                log.info(`📊 Current follow count from MongoDB: ${followCount}`);
-                log.info(`📊 Follows today: ${stats.followsToday || 0}`);
-            }
-        } catch (statsError) {
-            log.error('Error fetching stats from MongoDB:', {
-                message: statsError.message,
-                code: statsError.code,
-                name: statsError.name,
-                stack: statsError.stack
-            });
         }
 
         // Check if running in GitHub Actions
@@ -788,6 +814,13 @@ async function main() {
         log.info('🌐 Browser closed. Script finished.');
 
     } catch (error) {
+        if (error.message === 'DAILY_LIMIT_REACHED') {
+            log.warning('🛑 Daily follow limit reached. Shutting down gracefully.');
+            if (browser) await browser.close();
+            await client.close();
+            process.exit(0);
+        }
+
         log.error('❌ An error occurred:', error.message);
         log.error('Stack trace:', error.stack);
 
