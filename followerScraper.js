@@ -5,6 +5,15 @@ require('dotenv').config();
 const { MongoClient } = require('mongodb');
 const log = require('./utils/logger');
 
+// Validate required environment variables
+const requiredEnvVars = ['MONGO_URI', 'INSTAGRAM_USERNAME', 'INSTAGRAM_PASSWORD'];
+const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+
+if (missingEnvVars.length > 0) {
+    console.error('❌ Missing required environment variables:', missingEnvVars.join(', '));
+    process.exit(1);
+}
+
 // Constants for cookie management
 const COOKIE_PATH = 'cookies.json';
 const INSTAGRAM_URL = 'https://www.instagram.com/';
@@ -551,18 +560,39 @@ async function main() {
         log.info(`🎯 Target: Follow maximum ${MAX_FOLLOWS} people`);
         log.info(`⏱️ Session started at: ${sessionStartTime.toISOString()}`);
 
-        // Connect to MongoDB
-        await client.connect();
+        // Connect to MongoDB with detailed error handling
+        try {
+            log.info(`Attempting to connect to MongoDB at: ${uri.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')}`);
+            await client.connect();
+            log.success('📦 Connected to MongoDB successfully');
+        } catch (mongoError) {
+            log.error('MongoDB Connection Error:', {
+                message: mongoError.message,
+                code: mongoError.code,
+                name: mongoError.name,
+                stack: mongoError.stack
+            });
+            throw new Error(`Failed to connect to MongoDB: ${mongoError.message}`);
+        }
+
         const database = client.db('instagram_bot');
         const followersCollection = database.collection('followers');
-        log.success('📦 Connected to MongoDB successfully');
 
-        // Get current follow count from followers collection
-        const stats = await followersCollection.findOne({ _id: 'followers_stats' });
-        if (stats) {
-            followCount = stats.totalFollows || 0;
-            log.info(`📊 Current follow count from MongoDB: ${followCount}`);
-            log.info(`📊 Follows today: ${stats.followsToday || 0}`);
+        // Get current follow count from followers collection with error handling
+        try {
+            const stats = await followersCollection.findOne({ _id: 'followers_stats' });
+            if (stats) {
+                followCount = stats.totalFollows || 0;
+                log.info(`📊 Current follow count from MongoDB: ${followCount}`);
+                log.info(`📊 Follows today: ${stats.followsToday || 0}`);
+            }
+        } catch (statsError) {
+            log.error('Error fetching stats from MongoDB:', {
+                message: statsError.message,
+                code: statsError.code,
+                name: statsError.name,
+                stack: statsError.stack
+            });
         }
 
         // Check if running in GitHub Actions
