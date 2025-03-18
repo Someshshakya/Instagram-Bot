@@ -194,24 +194,91 @@ async function findFollowButtons(page) {
     return [];
 }
 
-async function followUsers(page, buttons) {
-    log.info('Starting to follow users...');
+async function followUser(page, button) {
+    try {
+        // Scroll button into view
+        await button.evaluate(btn => btn.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+        await randomDelay(2000, 3000);
 
-    for (const button of buttons) {
-        try {
-            // Scroll button into view
-            await button.evaluate(btn => btn.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-            await randomDelay(1000, 2000);
+        // Get button text before clicking
+        const buttonText = await button.evaluate(btn => btn.textContent);
 
+        // Only click if it's a follow button
+        if (buttonText.toLowerCase().includes('follow')) {
             // Click the button
             await button.click();
             await randomDelay(2000, 3000);
 
-            log.success('Successfully followed a user');
-        } catch (error) {
-            log.error('Error following user:', error.message);
-            continue;
+            // Verify the follow action
+            const newButtonText = await button.evaluate(btn => btn.textContent);
+            if (newButtonText.toLowerCase().includes('following')) {
+                log.success('Successfully followed user');
+                return true;
+            } else {
+                throw new Error('Follow action not confirmed');
+            }
+        } else {
+            throw new Error('Not a follow button');
         }
+    } catch (error) {
+        log.error('Error following user:', error.message);
+        throw error;
+    }
+}
+
+async function followUsers(page, targetProfile) {
+    try {
+        let followsToday = 0;
+        const maxFollows = 100;
+
+        while (followsToday < maxFollows) {
+            try {
+                // Find and click follow buttons
+                const followButtons = await findFollowButtons(page);
+                if (followButtons.length === 0) {
+                    log.warning('No more follow buttons found, refreshing page...');
+                    await page.reload();
+                    await randomDelay(2, 5);
+                    continue;
+                }
+
+                // Follow users
+                for (const button of followButtons) {
+                    if (followsToday >= maxFollows) break;
+
+                    try {
+                        await followUser(page, button);
+                        followsToday++;
+                        await updateFollowCount(followsToday);
+                        log.success(`Successfully followed user ${followsToday}/${maxFollows}`);
+
+                        // Add random delay between follows
+                        await randomDelay(2, 10);
+                    } catch (error) {
+                        log.warning(`Skipping user: ${error.message}`);
+                        continue;
+                    }
+                }
+
+                // Scroll to load more
+                log.info('Scrolling to load more followers...');
+                await page.evaluate(() => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                });
+                await randomDelay(2, 5);
+
+            } catch (error) {
+                log.warning(`Error during follow cycle: ${error.message}`);
+                await page.reload();
+                await randomDelay(2, 5);
+                continue;
+            }
+        }
+
+        log.success(`Completed following ${followsToday} users`);
+    } catch (error) {
+        log.error(`Error in followUsers: ${error.message}`);
+        throw error;
     }
 }
 
@@ -453,37 +520,7 @@ async function main() {
             await scrollFollowersList(page);
 
             // Step 3: Find and follow users
-            const followButtons = await findFollowButtons(page);
-            if (followButtons.length > 0) {
-                for (const button of followButtons) {
-                    if (followCount >= MAX_FOLLOWS) break;
-
-                    try {
-                        // Scroll button into view
-                        await button.evaluate(btn => btn.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-                        await randomDelay(2000, 4000);
-
-                        // Click the button
-                        await button.click();
-
-                        // Random delay between 2-10 seconds after following
-                        await randomDelay(2000, 10000);
-
-                        followCount++;
-                        log.success(`Successfully followed user ${followCount}/${MAX_FOLLOWS}`);
-
-                        // Update MongoDB with new follow count
-                        await updateFollowCount(database, followCount);
-                    } catch (error) {
-                        log.error('Error following user:', error.message);
-                        continue;
-                    }
-                }
-            } else {
-                log.warning('No follow buttons found, refreshing page...');
-                await randomDelay(5000, 8000);
-                continue;
-            }
+            await followUsers(page, null);
 
             // If we've reached the max follows, break the loop
             if (followCount >= MAX_FOLLOWS) break;
