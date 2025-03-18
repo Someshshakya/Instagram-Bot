@@ -5,11 +5,23 @@ const fs = require('fs');
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
 
-// Initialize puppeteer with StealthPlugin
-const stealthPlugin = StealthPlugin();
-// Disable problematic evasions for GitHub Actions
-stealthPlugin.enabledEvasions.delete('chrome.runtime');
-stealthPlugin.enabledEvasions.delete('navigator.plugins');
+// Initialize puppeteer with minimal stealth options
+const stealthPlugin = StealthPlugin({
+    enabledEvasions: {
+        webgl: true,
+        hairline: true,
+        chrome: {
+            runtime: false
+        },
+        navigator: {
+            plugins: false,
+            webdriver: true,
+            languages: true,
+            permissions: false,
+            hardwareConcurrency: false
+        }
+    }
+});
 puppeteer.use(stealthPlugin);
 
 // Constants for cookie management
@@ -593,72 +605,98 @@ async function main() {
 
         try {
             const launchOptions = {
-                product: 'chrome',
-                headless: isGitHubActions ? 'new' : false,
+                headless: isGitHubActions,
                 ignoreHTTPSErrors: true,
-                timeout: 60000,
-                protocolTimeout: 60000,
-                defaultViewport: {
-                    width: 1280,
-                    height: 720,
-                    deviceScaleFactor: 1,
-                    isMobile: false,
-                    hasTouch: false
-                },
+                timeout: 120000,
+                protocolTimeout: 120000,
+                pipe: true,
+                dumpio: true,
+                defaultViewport: null,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
+                    '--disable-gpu',
                     '--no-first-run',
                     '--no-zygote',
-                    '--disable-gpu',
-                    '--hide-scrollbars',
-                    '--mute-audio',
-                    '--disable-background-networking',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-breakpad',
-                    '--disable-component-update',
-                    '--disable-features=IsolateOrigins,site-per-process,TranslateUI',
-                    '--disable-blink-features=AutomationControlled',
+                    '--single-process',
                     '--disable-extensions',
-                    '--disable-notifications',
-                    '--window-size=1280,720'
+                    '--disable-web-security',
+                    '--disable-features=site-per-process',
+                    '--ignore-certificate-errors',
+                    '--allow-running-insecure-content',
+                    '--disable-blink-features=AutomationControlled',
+                    '--lang=en-US,en'
                 ]
             };
 
             // Add GitHub Actions specific configurations
             if (isGitHubActions) {
+                // Remove executablePath to use bundled Chromium
                 launchOptions.args.push(
-                    '--single-process',
-                    '--deterministic-fetch',
-                    '--no-startup-window',
                     '--disable-software-rasterizer',
-                    '--disable-default-apps',
-                    '--disable-sync',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding',
+                    '--disable-features=TranslateUI',
                     '--metrics-recording-only',
+                    '--no-default-browser-check',
                     '--password-store=basic'
                 );
-
-                // Set executable path for GitHub Actions
-                launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH ||
-                    '/usr/bin/google-chrome-stable';
             }
 
             log.info('Browser launch options configured, attempting to launch...');
             browser = await puppeteer.launch(launchOptions);
             log.success('🌐 Browser launched successfully');
 
-            // Create a new page with reduced stealth measures
-            const context = await browser.createIncognitoBrowserContext();
-            page = await context.newPage();
+            // Create a new page
+            page = await browser.newPage();
 
-            // Basic anti-detection scripts
+            // Set up basic evasions directly
             await page.evaluateOnNewDocument(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                window.chrome = { runtime: {} };
+                // Pass webdriver check
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+
+                // Pass chrome check
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function () { },
+                    csi: function () { },
+                    app: {}
+                };
+
+                // Pass plugins check
+                const mockPlugins = [
+                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                ];
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => mockPlugins,
+                    enumerable: true,
+                    configurable: true
+                });
+            });
+
+            // Set a custom user agent
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+
+            // Set viewport
+            await page.setViewport({
+                width: 1280,
+                height: 720,
+                deviceScaleFactor: 1
+            });
+
+            // Enable request interception
+            await page.setRequestInterception(true);
+            page.on('request', (request) => {
+                // Block unnecessary resources
+                if (['image', 'stylesheet', 'font'].includes(request.resourceType())) {
+                    request.abort();
+                } else {
+                    request.continue();
+                }
             });
 
         } catch (launchError) {
@@ -667,25 +705,10 @@ async function main() {
                 errorName: launchError.name,
                 errorMessage: launchError.message,
                 errorStack: launchError.stack,
-                isGitHubActions,
-                chromePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable'
+                isGitHubActions
             });
             throw launchError;
         }
-
-        // Generate and set a mobile User-Agent
-        const mobileUserAgent = new userAgent({ deviceCategory: 'mobile' });
-        await page.setUserAgent(mobileUserAgent.toString());
-        log.browser(`🌍 Using User-Agent: ${mobileUserAgent.toString()}`);
-
-        // Set mobile viewport
-        await page.setViewport({
-            width: 375,
-            height: 812,
-            deviceScaleFactor: 2,
-            isMobile: true,
-            hasTouch: true
-        });
 
         // Navigate to Instagram and perform login
         log.info('🌐 Navigating to Instagram...');
