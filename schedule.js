@@ -2,6 +2,11 @@ const cron = require('node-cron');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { MongoClient } = require('mongodb');
+
+// MongoDB connection string
+const MONGODB_URI = 'mongodb://localhost:27017';
+const MAX_FOLLOWS = 100;
 
 // Configure logging
 const logFile = path.join(__dirname, 'scheduler.log');
@@ -26,13 +31,35 @@ const log = {
     }
 };
 
-// Schedule the script to run daily at 10:00 AM
-const schedule = '0 10 * * *'; // Cron expression for 10:00 AM every day
+// Function to check follow count in MongoDB
+async function checkFollowCount() {
+    const client = new MongoClient(MONGODB_URI);
+    try {
+        await client.connect();
+        const database = client.db('instagram_bot');
+        const followersCollection = database.collection('followers');
 
-log.info('🚀 Starting Instagram Follower Scraper Scheduler');
-log.info(`⏰ Schedule: ${schedule} (10:00 AM daily)`);
+        const stats = await followersCollection.findOne({ _id: 'followers_stats' });
+        return stats ? (stats.totalFollows || 0) : 0;
+    } catch (error) {
+        log.error(`Error checking follow count: ${error.message}`);
+        return 0;
+    } finally {
+        await client.close();
+    }
+}
 
-cron.schedule(schedule, () => {
+// Function to run the follower scraper
+async function runFollowerScraper() {
+    const followCount = await checkFollowCount();
+
+    if (followCount >= MAX_FOLLOWS) {
+        log.info(`Reached maximum follow limit (${MAX_FOLLOWS}). Stopping scheduler.`);
+        process.exit(0);
+        return;
+    }
+
+    log.info(`Current follow count: ${followCount}/${MAX_FOLLOWS}`);
     log.info('Starting scheduled Instagram follower scraper...');
 
     // Get the absolute path to the script
@@ -71,7 +98,19 @@ cron.schedule(schedule, () => {
     process.on('exit', (code) => {
         log.info(`Script exited with code: ${code}`);
     });
-});
+}
+
+// Schedule the script to run daily at 10:00 AM
+const schedule = '0 10 * * *'; // Cron expression for 10:00 AM every day
+
+log.info('🚀 Starting Instagram Follower Scraper Scheduler');
+log.info(`⏰ Schedule: ${schedule} (10:00 AM daily)`);
+
+// Run immediately on startup
+runFollowerScraper();
+
+// Schedule daily runs
+cron.schedule(schedule, runFollowerScraper);
 
 // Keep the process running
 process.on('SIGINT', () => {
