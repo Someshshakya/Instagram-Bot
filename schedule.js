@@ -41,7 +41,29 @@ async function checkFollowCount() {
         const statsCollection = database.collection('follow_stats');
 
         const stats = await statsCollection.findOne({ _id: 'follow_stats' });
-        return stats ? (stats.totalFollows || 0) : 0;
+
+        // If no stats exist, return 0
+        if (!stats) return 0;
+
+        // Check if todayDate exists and is from today
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        if (!stats.todayDate || new Date(stats.todayDate) < today) {
+            // Reset followsToday if it's a new day
+            await statsCollection.updateOne(
+                { _id: 'follow_stats' },
+                {
+                    $set: {
+                        followsToday: 0,
+                        todayDate: today
+                    }
+                }
+            );
+            log.info('Reset daily follow counter for new day');
+        }
+
+        return stats.totalFollows || 0;
     } catch (error) {
         log.error(`Error checking follow count: ${error.message}`);
         return 0;
