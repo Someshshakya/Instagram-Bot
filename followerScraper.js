@@ -589,74 +589,103 @@ async function main() {
 
         try {
             const launchOptions = {
-                headless: isGitHubActions ? 'new' : false,
-                executablePath: process.env.CHROME_PATH || undefined,
+                product: 'chrome',
+                headless: isGitHubActions ? true : false,
+                ignoreHTTPSErrors: true,
                 defaultViewport: {
-                    width: 375,
-                    height: 812,
-                    deviceScaleFactor: 2,
-                    isMobile: true,
-                    hasTouch: true
+                    width: 1280,
+                    height: 720,
+                    deviceScaleFactor: 1,
+                    isMobile: false,
+                    hasTouch: false
                 },
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
                     '--disable-gpu',
-                    '--window-size=375,812',
-                    '--disable-web-security',
-                    '--disable-features=IsolateOrigins,site-per-process',
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-infobars',
-                    '--disable-notifications',
-                    '--disable-default-apps',
-                    '--disable-extensions',
-                    '--disable-sync',
+                    '--hide-scrollbars',
+                    '--mute-audio',
+                    '--disable-background-networking',
                     '--disable-background-timer-throttling',
                     '--disable-backgrounding-occluded-windows',
+                    '--disable-breakpad',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-component-update',
+                    '--disable-default-apps',
+                    '--disable-dev-shm-usage',
+                    '--disable-domain-reliability',
+                    '--disable-extensions',
+                    '--disable-features=AudioServiceOutOfProcess',
+                    '--disable-hang-monitor',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-notifications',
+                    '--disable-offer-store-unmasked-wallet-cards',
+                    '--disable-popup-blocking',
+                    '--disable-print-preview',
+                    '--disable-prompt-on-repost',
                     '--disable-renderer-backgrounding',
-                    '--disable-features=ScriptStreaming',
-                    '--enable-automation',
-                    '--ignore-certificate-errors',
-                    '--no-first-run'
+                    '--disable-setuid-sandbox',
+                    '--disable-speech-api',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--disable-webgl',
+                    '--disable-webgl2',
+                    '--metrics-recording-only',
+                    '--no-default-browser-check',
+                    '--no-experiments',
+                    '--no-pings',
+                    '--no-sandbox',
+                    '--no-zygote',
+                    '--password-store=basic',
+                    '--use-gl=swiftshader',
+                    '--use-mock-keychain',
+                    '--window-size=1280,720'
                 ]
             };
 
-            // Add additional arguments for GitHub Actions environment
+            // Add GitHub Actions specific configurations
             if (isGitHubActions) {
                 launchOptions.args.push(
                     '--single-process',
-                    '--no-zygote',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-canvas-aa',
-                    '--disable-2d-canvas-clip-aa',
-                    '--disable-gl-drawing-for-tests',
-                    '--disable-software-rasterizer',
-                    '--mute-audio',
-                    '--disable-background-networking',
-                    '--disable-default-apps',
-                    '--disable-extensions',
-                    '--disable-sync',
-                    '--disable-translate',
-                    '--hide-scrollbars',
-                    '--metrics-recording-only',
-                    '--no-sandbox',
-                    '--no-startup-window',
                     '--deterministic-fetch',
-                    '--remote-debugging-port=9222'
+                    '--proxy-server="direct://"',
+                    '--proxy-bypass-list=*',
+                    '--enable-automation'
                 );
+
+                // Set executable path for GitHub Actions
+                launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH ||
+                    '/usr/bin/google-chrome-stable';
+
+                // Increase timeout for GitHub Actions
+                launchOptions.timeout = 60000;
             }
 
+            log.info('Browser launch options configured, attempting to launch...');
             browser = await puppeteer.launch(launchOptions);
             log.success('🌐 Browser launched successfully');
+
+            // Additional browser setup for GitHub Actions
+            if (isGitHubActions) {
+                const defaultContext = browser.defaultBrowserContext();
+                await defaultContext.overridePermissions('https://www.instagram.com', [
+                    'notifications',
+                    'geolocation'
+                ]);
+            }
         } catch (launchError) {
             log.error('Failed to launch browser:', launchError.message);
-            if (launchError.message.includes('ENOENT')) {
-                log.error('Chrome executable not found. Please ensure Chrome is installed or set CHROME_PATH environment variable.');
-            }
+            log.error('Launch error details:', {
+                errorName: launchError.name,
+                errorMessage: launchError.message,
+                errorStack: launchError.stack,
+                isGitHubActions,
+                chromePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable'
+            });
             throw launchError;
         }
 
