@@ -270,7 +270,8 @@ async function updateFollowCount(database, count) {
                         lastUpdated: new Date(),
                         totalFollows: count,
                         followsToday: 1,
-                        lastResetDate: today
+                        lastResetDate: today,
+                        todayDate: today  // Set todayDate when starting to follow
                     }
                 },
                 { upsert: true }
@@ -283,7 +284,8 @@ async function updateFollowCount(database, count) {
                 {
                     $set: {
                         lastUpdated: new Date(),
-                        totalFollows: count
+                        totalFollows: count,
+                        todayDate: today  // Update todayDate with each follow
                     },
                     $inc: {
                         followsToday: 1
