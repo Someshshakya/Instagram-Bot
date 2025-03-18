@@ -38,9 +38,9 @@ async function checkFollowCount() {
     try {
         await client.connect();
         const database = client.db('instagram_bot');
-        const followersCollection = database.collection('followers');
+        const statsCollection = database.collection('follow_stats');
 
-        const stats = await followersCollection.findOne({ _id: 'followers_stats' });
+        const stats = await statsCollection.findOne({ _id: 'follow_stats' });
         return stats ? (stats.totalFollows || 0) : 0;
     } catch (error) {
         log.error(`Error checking follow count: ${error.message}`);
