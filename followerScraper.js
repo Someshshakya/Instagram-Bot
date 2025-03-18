@@ -134,64 +134,40 @@ async function scrollFollowersList(page) {
 }
 
 async function findFollowButtons(page) {
-    log.info('Looking for follow buttons...');
-
-    // Wait for buttons to be visible with more specific selectors
-    const buttonSelectors = [
-        'button:has-text("Follow")',
-        'button._acan._acap._acas._aj1-',
-        'button[class*="x1i10hfl"]',
-        'button[class*="x1n2onr6"]',
-        'button[class*="x1q0g3np"]',
-        'button[class*="x1lliihq"]'
-    ];
-
-    for (const selector of buttonSelectors) {
-        try {
-            await page.waitForSelector(selector, { visible: true, timeout: 10000 });
-            const buttons = await page.$$(selector);
-            if (buttons.length > 0) {
-                log.info(`Found ${buttons.length} follow buttons`);
-                return buttons;
-            }
-        } catch (e) {
-            continue;
-        }
-    }
-
-    // If no buttons found, try scrolling to load more content
     try {
-        await page.evaluate(() => {
-            return new Promise((resolve) => {
-                let totalHeight = 0;
-                const distance = 300;
-                const timer = setInterval(() => {
-                    const scrollHeight = document.documentElement.scrollHeight;
-                    window.scrollBy(0, distance);
-                    totalHeight += distance;
+        log.info('Looking for follow buttons...');
 
-                    if (totalHeight >= scrollHeight - window.innerHeight) {
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, 200);
-            });
-        });
-        await randomDelay(2000, 3000);
+        // Wait for buttons to be present
+        await page.waitForSelector('button[type="button"]', { timeout: 10000 });
 
-        // Try finding buttons again after scrolling
-        for (const selector of buttonSelectors) {
-            const buttons = await page.$$(selector);
-            if (buttons.length > 0) {
-                log.info(`Found ${buttons.length} follow buttons after scrolling`);
-                return buttons;
+        // Get all buttons
+        const buttons = await page.$$('button[type="button"]');
+        const followButtons = [];
+
+        // Check each button
+        for (const button of buttons) {
+            try {
+                const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
+                const buttonHTML = await button.evaluate(btn => btn.outerHTML);
+
+                // Check if it's a follow button
+                if (buttonText.includes('follow') &&
+                    !buttonText.includes('following') &&
+                    !buttonText.includes('unfollow') &&
+                    !buttonHTML.includes('disabled')) {
+                    followButtons.push(button);
+                }
+            } catch (error) {
+                continue;
             }
         }
-    } catch (e) {
-        log.error('Error while scrolling:', e.message);
-    }
 
-    return [];
+        log.info(`Found ${followButtons.length} follow buttons`);
+        return followButtons;
+    } catch (error) {
+        log.error('Error finding follow buttons:', error.message);
+        return [];
+    }
 }
 
 async function followUser(page, button) {
@@ -201,17 +177,17 @@ async function followUser(page, button) {
         await randomDelay(2000, 3000);
 
         // Get button text before clicking
-        const buttonText = await button.evaluate(btn => btn.textContent);
+        const buttonText = await button.evaluate(btn => btn.textContent.toLowerCase());
 
         // Only click if it's a follow button
-        if (buttonText.toLowerCase().includes('follow')) {
+        if (buttonText.includes('follow') && !buttonText.includes('following')) {
             // Click the button
             await button.click();
             await randomDelay(2000, 3000);
 
             // Verify the follow action
-            const newButtonText = await button.evaluate(btn => btn.textContent);
-            if (newButtonText.toLowerCase().includes('following')) {
+            const newButtonText = await button.evaluate(btn => btn.textContent.toLowerCase());
+            if (newButtonText.includes('following')) {
                 log.success('Successfully followed user');
                 return true;
             } else {
