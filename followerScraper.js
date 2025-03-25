@@ -349,7 +349,8 @@ async function followUser(page, button) {
         const buttonText = await button.evaluate(btn => btn.textContent.trim().toLowerCase());
         log.debug(`Initial button text: "${buttonText}"`);
 
-        if (buttonText !== 'follow') {
+        // More lenient check for follow button
+        if (!buttonText.includes('follow')) {
             throw new Error(`Invalid button text: "${buttonText}"`);
         }
 
@@ -358,18 +359,33 @@ async function followUser(page, button) {
         await button.evaluate(btn => btn.click());
         await randomDelay(2000, 3000);
 
-        // Verify the follow action
+        // More lenient verification of follow action
         const newButtonText = await button.evaluate(btn => {
             const text = btn.textContent.trim().toLowerCase();
             return text;
         });
         log.debug(`Button text after click: "${newButtonText}"`);
 
-        if (newButtonText === 'following') {
+        // Check if the button text indicates following state
+        if (newButtonText.includes('following') || newButtonText.includes('followed')) {
             log.success('✅ Follow action confirmed');
             return true;
         } else {
-            throw new Error(`Follow not confirmed. Button text: "${newButtonText}"`);
+            // Check if button is still clickable (might indicate follow failed)
+            const isClickable = await button.evaluate(btn => {
+                const style = window.getComputedStyle(btn);
+                return style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    !btn.disabled;
+            });
+
+            if (isClickable) {
+                throw new Error(`Follow not confirmed. Button text: "${newButtonText}"`);
+            } else {
+                // Button is not clickable, might mean follow succeeded
+                log.success('✅ Follow action likely succeeded (button no longer clickable)');
+                return true;
+            }
         }
     } catch (error) {
         log.error(`Follow action failed: ${error.message}`);
