@@ -2,7 +2,8 @@ name: Instagram Bot Automation
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # Run at 10:00 AM UTC daily
+    - cron: '0 4 * * 1'  # Run at 4:00 AM UTC on Monday (9:30 AM IST)
+    - cron: '0 4 * * 4'  # Run at 4:00 AM UTC on Thursday (9:30 AM IST)
   workflow_dispatch:  # Allow manual trigger
   push:
     branches:
@@ -13,6 +14,7 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 20  # Set timeout to 15 minutes + 5 minutes buffer
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true

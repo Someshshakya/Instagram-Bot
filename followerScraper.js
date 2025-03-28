@@ -25,6 +25,7 @@ const MAX_FOLLOW_DELAY = 8000;
 const RATE_LIMIT_DELAY = 30000;
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 60000;
+const MAX_RUNTIME_MS = 15 * 60 * 1000; // 15 minutes in milliseconds
 
 // Use MongoDB URL from environment variables with fallback
 const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
@@ -144,6 +145,54 @@ async function loadSuggestionsPage(page) {
         }
 
         return true;
+    } catch (error) {
+        log.error('Error loading suggestions page:', error.message);
+        await page.screenshot({ path: 'load-suggestions-error.png', fullPage: true });
+        return false;
+    }
+}
+
+async function loadSuggestedUsers(page) {
+    log.info('Attempting to load suggested users...');
+
+    try {
+        // Navigate to Instagram explore/suggested page
+        log.info('Navigating to suggestions page...');
+        await page.goto('https://www.instagram.com/explore/people/suggested/', {
+            waitUntil: 'networkidle0',
+            timeout: 30000
+        });
+        await randomDelay(2000, 3000);
+
+        // Wait for the suggestions list to load
+        const suggestionsSelectors = [
+            'div[role="main"]',
+            'div[data-pagelet="SuggestedUsers"]',
+            'div[data-pagelet="MainFeed"]'
+        ];
+
+        let foundSuggestions = false;
+        for (const selector of suggestionsSelectors) {
+            try {
+                await page.waitForSelector(selector, { visible: true, timeout: 5000 });
+                log.info(`Found suggestions using selector: ${selector}`);
+                foundSuggestions = true;
+                break;
+            } catch (e) {
+                continue;
+            }
+        }
+
+        if (!foundSuggestions) {
+            log.error('Could not find suggestions list');
+            await page.screenshot({ path: 'no-suggestions-found.png', fullPage: true });
+            return false;
+        }
+
+        // Take a screenshot for debugging
+        await page.screenshot({ path: 'suggestions-page.png', fullPage: true });
+        return true;
+
     } catch (error) {
         log.error('Error loading suggestions page:', error.message);
         await page.screenshot({ path: 'load-suggestions-error.png', fullPage: true });
@@ -663,11 +712,19 @@ async function main() {
     let followCount = 0;
     let lastFollowedUser = null;
     let sessionStartTime = new Date();
+    let shouldStop = false;
 
     try {
         log.info('🚀 Starting Instagram automation...');
         log.info(`🎯 Target: Follow maximum ${MAX_FOLLOWS} people`);
         log.info(`⏱️ Session started at: ${sessionStartTime.toISOString()}`);
+        log.info(`⏰ Will run for maximum ${MAX_RUNTIME_MS / (60 * 1000)} minutes`);
+
+        // Add timer to stop after 15 minutes
+        setTimeout(() => {
+            shouldStop = true;
+            log.info('⏰ Time limit reached (15 minutes). Will stop after current operation completes.');
+        }, MAX_RUNTIME_MS);
 
         // Connect to MongoDB with detailed error handling
         try {
@@ -774,32 +831,59 @@ async function main() {
             await performLogin(page);
         }
 
-        while (followCount < MAX_FOLLOWS) {
-            // Step 1: Load followers page
+        while (followCount < MAX_FOLLOWS && !shouldStop) {
+            // First try followers page
             log.info('Navigating to followers page...');
             const followersLoaded = await loadSuggestionsPage(page);
-            if (!followersLoaded) {
-                throw new Error('Failed to load followers page');
+
+            if (followersLoaded) {
+                await scrollFollowersList(page);
+                const followButtons = await findFollowButtons(page);
+
+                if (followButtons.length === 0) {
+                    log.info('No follow buttons found in followers list, switching to suggestions...');
+                    // Try suggestions page instead
+                    const suggestionsLoaded = await loadSuggestedUsers(page);
+                    if (suggestionsLoaded) {
+                        await followUsers(page);
+                    } else {
+                        log.error('Failed to load both followers and suggestions');
+                        break;
+                    }
+                } else {
+                    // Follow users from followers list
+                    await followUsers(page);
+                }
+            } else {
+                log.info('Failed to load followers page, trying suggestions instead...');
+                const suggestionsLoaded = await loadSuggestedUsers(page);
+                if (suggestionsLoaded) {
+                    await followUsers(page);
+                } else {
+                    log.error('Failed to load both followers and suggestions');
+                    break;
+                }
             }
 
-            // Step 2: Scroll to load more followers
-            await scrollFollowersList(page);
-
-            // Step 3: Find and follow users
-            await followUsers(page);
+            // Check if we should stop
+            if (shouldStop) {
+                log.info('⏰ Time limit reached. Stopping gracefully...');
+                break;
+            }
 
             // If we've reached the max follows, break the loop
             if (followCount >= MAX_FOLLOWS) break;
 
-            // Refresh the page to load more followers
-            log.info('Refreshing page to load more followers...');
+            // Refresh the page to load more users
+            log.info('Refreshing page to load more users...');
             await page.reload({ waitUntil: 'networkidle0' });
             await randomDelay(3000, 5000);
         }
 
         // Final update to MongoDB
         await updateFollowCount(database, followCount);
-        log.success(`Completed following ${followCount} users`);
+        const runTime = (new Date() - sessionStartTime) / 1000 / 60; // in minutes
+        log.success(`Completed following ${followCount} users in ${runTime.toFixed(2)} minutes`);
         await browser.close();
         log.info('🌐 Browser closed. Script finished.');
 
