@@ -2,11 +2,11 @@ name: Daily Instagram Follower Scraper
 
 on:
   schedule:
-    - cron: '4 16 * * *'  # Run at 4:04 PM UTC (9:34 PM IST)
+    - cron: '40 16 * * *'  # Run at 4:10 PM UTC (9:40 PM IST)
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
-  contents: read
+  contents: write  # Ensure we have write permissions
   actions: write
 
 jobs:
