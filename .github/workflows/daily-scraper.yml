@@ -2,7 +2,7 @@ name: Daily Instagram Follower Scraper
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Run at midnight UTC
+    - cron: '4 16 * * *'  # Run at 4:04 PM UTC (9:34 PM IST)
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
@@ -12,6 +12,7 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # Set timeout to 10 minutes
     env:
       INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
       INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
