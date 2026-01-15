@@ -8,10 +8,13 @@ on:
         required: false
         default: 'Manual trigger'
   push:
+    # Run on every commit/push to any branch
     branches:
-      - main  # Trigger on push to main branch
+      - '**'  # All branches
     paths-ignore:
       - 'follow_stats.json'  # Ignore changes to follow stats file
+      - '*.png'  # Ignore screenshot files
+      - '*.log'  # Ignore log files
 
 jobs:
   run-bot:
@@ -20,22 +23,48 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
+    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
           
       - name: Install dependencies
         run: npm install
         
+      - name: Verify Environment Variables
+        run: |
+          echo "🔍 Verifying environment variables..."
+          if [ -z "${{ secrets.INSTAGRAM_USERNAME }}" ]; then
+            echo "❌ INSTAGRAM_USERNAME secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.INSTAGRAM_PASSWORD }}" ]; then
+            echo "❌ INSTAGRAM_PASSWORD secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.MONGODB_URI }}" ]; then
+            echo "❌ MONGODB_URI secret is not set"
+            exit 1
+          fi
+          echo "✅ All required secrets are set"
+          # Check if it's MongoDB Atlas
+          if [[ "${{ secrets.MONGODB_URI }}" == mongodb+srv* ]]; then
+            echo "📡 Using MongoDB Atlas (cloud database)"
+          else
+            echo "💻 Using MongoDB connection: ${{ secrets.MONGODB_URI }}"
+          fi
+      
       - name: Run Instagram Bot
         env:
           INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
           INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          GITHUB_ACTIONS: 'true'
+          CI: 'true'
         run: node followerScraper.js
         
       - name: Commit and push changes

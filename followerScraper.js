@@ -30,8 +30,11 @@ const MAX_RUNTIME_MS = 15 * 60 * 1000; // 15 minutes in milliseconds
 // Use MongoDB URL from environment variables with fallback
 const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/instagram_bot';
 const client = new MongoClient(uri, {
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 10000
+    serverSelectionTimeoutMS: 30000, // Increased to 30 seconds for cloud connections
+    connectTimeoutMS: 30000, // Increased to 30 seconds for cloud connections
+    socketTimeoutMS: 45000, // Socket timeout for long operations
+    maxPoolSize: 10, // Maximum number of connections in the pool
+    retryWrites: true, // Enable retry writes for better reliability
 });
 
 // Add cookie loading function
