@@ -1,10 +1,12 @@
 name: Instagram Bot Automation
 
 on:
-  schedule:
-    - cron: '0 4 * * 1'  # Run at 4:00 AM UTC on Monday (9:30 AM IST)
-    - cron: '0 4 * * 4'  # Run at 4:00 AM UTC on Thursday (9:30 AM IST)
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:  # Manual trigger - runs instantly when triggered
+    inputs:
+      schedule_note:
+        description: 'Note about this run'
+        required: false
+        default: 'Manual trigger'
   push:
     branches:
       - main  # Trigger on push to main branch
